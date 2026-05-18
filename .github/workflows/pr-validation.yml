@@ -16,3 +16,10 @@ jobs:
 
       - name: Validate Workflow Started
         run: echo "Salesforce PR Validation Started"
+
+      - name: Install Salesforce CLI
+        run: |
+          npm install @salesforce/cli --global
+
+      - name: Verify Salesforce CLI
+        run: sf --version
