@@ -23,3 +23,11 @@ jobs:
 
       - name: Verify Salesforce CLI
         run: sf --version
+
+      - name: Authenticate Salesforce Org
+        run: |
+          echo "${{ secrets.SF_AUTH_URL }}" > authFile.txt
+          sf org login sfdx-url --sfdx-url-file authFile.txt --alias CICD
+
+      - name: Verify Org Connection
+        run: sf org list
