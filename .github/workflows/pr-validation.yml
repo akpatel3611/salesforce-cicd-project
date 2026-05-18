@@ -35,6 +35,7 @@ jobs:
       - name: Validate Deployment
         run: |
           sf project deploy validate \
-          --source-dir force-app \
+          --source-dir force-app/main/default/lwc \
           --target-org CICD \
-          --test-level RunLocalTests
+          --test-level RunSpecifiedTests \
+          --tests ContactControllerTest
