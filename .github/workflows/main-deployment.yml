@@ -1,0 +1,35 @@
+name: Main Deployment
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Salesforce CLI
+        run: |
+          npm install @salesforce/cli --global
+
+      - name: Authenticate Org
+        run: |
+          echo "${{ secrets.SF_AUTH_URL }}" > auth.txt
+          sf org login sfdx-url \
+          --sfdx-url-file auth.txt \
+          --alias CICDORG
+
+      - name: Validate Org Connection
+        run: |
+          sf org display --target-org CICDORG
+
+      - name: Deploy Metadata
+        run: |
+          sf project deploy start \
+          --target-org CICDORG
