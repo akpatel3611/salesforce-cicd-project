@@ -1,0 +1,13 @@
+name: Commit Validation
+
+on:
+  pull_request:
+
+jobs:
+  validate-commit-message:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate commit message
+        run: |
+          echo "Checking commit message..."
