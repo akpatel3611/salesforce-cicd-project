@@ -1,0 +1,11 @@
+documentation:
+  - changed-files:
+      - any-glob-to-any-file: ["**/*.md"]
+
+cicd:
+  - changed-files:
+      - any-glob-to-any-file: [".github/**"]
+
+salesforce:
+  - changed-files:
+      - any-glob-to-any-file: ["force-app/**"]
