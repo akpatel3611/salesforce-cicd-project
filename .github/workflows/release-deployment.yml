@@ -9,32 +9,20 @@ on:
         required: true
         type: choice
         options:
-          - LatestChanges
           - SpecificPR
-          - SpecificRelease
-          - SpecificCommit
           - SpecificComponent
           - FullDeploy
 
       prNumber:
-        description: "PR Number"
-        required: false
-
-      releaseTag:
-        description: "Release Tag Example: v1.0.0"
-        required: false
-
-      commitId:
-        description: "Commit ID"
+        description: "PR Number only (Example: 41)"
         required: false
 
       componentName:
-        description: "Example: lwc:accountViewer"
+        description: "Component Name only (Example: accountViewer)"
         required: false
 
       targetEnvironment:
         description: "Target Org"
-
         required: true
         type: choice
         options:
@@ -45,7 +33,6 @@ on:
 jobs:
 
   deploy:
-
     runs-on: ubuntu-latest
 
     environment:
@@ -53,33 +40,29 @@ jobs:
 
     steps:
 
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install Salesforce CLI
-        run: |
-          npm install @salesforce/cli --global
+      - name: Install CLI
+        run: npm install @salesforce/cli --global
 
       - name: Install Delta Plugin
         run: |
           echo y | sf plugins install sfdx-git-delta
 
-      - name: Authenticate Org
+      - name: Authenticate
         run: |
 
           if [ "${{ github.event.inputs.targetEnvironment }}" = "DEV" ]
           then
              echo "${{ secrets.DEV_ENVIRONMENT_SEC }}" > auth.txt
-
           elif [ "${{ github.event.inputs.targetEnvironment }}" = "SP" ]
           then
              echo "${{ secrets.SP_ENVIRONMENT_SEC }}" > auth.txt
-
           else
              echo "${{ secrets.POD3_ENVIRONMENT_SEC }}" > auth.txt
-
           fi
 
           sf org login sfdx-url \
@@ -87,79 +70,52 @@ jobs:
           --alias TARGETORG
 
 
-      - name: Generate Deployment Package
+      - name: Generate Package
         run: |
 
-          TYPE=${{ github.event.inputs.deploymentType }}
+          TYPE="${{ github.event.inputs.deploymentType }}"
 
-          if [ "$TYPE" = "LatestChanges" ]
+          if [ "$TYPE" = "SpecificPR" ]
           then
 
-             sf sgd source delta \
-             --from HEAD~1 \
-             --to HEAD \
-             --output-dir delta
+            git fetch origin pull/${{ github.event.inputs.prNumber }}/head:tempPR
 
-          elif [ "$TYPE" = "SpecificPR" ]
-          then
-
-             git fetch origin pull/${{ github.event.inputs.prNumber }}/head:tempPR
-
-             sf sgd source delta \
-             --from main \
-             --to tempPR \
-             --output-dir delta
-
-          elif [ "$TYPE" = "SpecificRelease" ]
-          then
-
-             sf sgd source delta \
-             --from ${{ github.event.inputs.releaseTag }} \
-             --to HEAD \
-             --output-dir delta
-
-          elif [ "$TYPE" = "SpecificCommit" ]
-          then
-
-             sf sgd source delta \
-             --from ${{ github.event.inputs.commitId }} \
-             --to HEAD \
-             --output-dir delta
-
-          elif [ "$TYPE" = "SpecificComponent" ]
-          then
-
-             COMPONENT=$(echo "${{ github.event.inputs.componentName }}" | cut -d':' -f2)
-
-             mkdir componentDeploy
-
-             cp -r force-app/main/default/lwc/$COMPONENT componentDeploy/
+            sf sgd source delta \
+            --from HEAD \
+            --to tempPR \
+            --generate-delta \
+            --output-dir .
 
           fi
 
 
       - name: Deploy
-
         run: |
+
+          TYPE="${{ github.event.inputs.deploymentType }}"
 
           if [ "$TYPE" = "SpecificComponent" ]
           then
 
-             sf project deploy start \
-             --source-dir componentDeploy \
-             --target-org TARGETORG
+              COMPONENT="${{ github.event.inputs.componentName }}"
 
-          elif [ "$TYPE" != "FullDeploy" ]
+              sf project deploy start \
+              --source-dir force-app/main/default/lwc/$COMPONENT \
+              --target-org TARGETORG
+
+
+          elif [ "$TYPE" = "SpecificPR" ]
           then
 
-             sf project deploy start \
-             --manifest delta/package/package.xml \
-             --target-org TARGETORG
+              sf project deploy start \
+              --manifest package/package.xml \
+              --target-org TARGETORG
+
 
           else
 
-             sf project deploy start \
-             --source-dir force-app \
-             --target-org TARGETORG
+              sf project deploy start \
+              --source-dir force-app \
+              --target-org TARGETORG
 
           fi
