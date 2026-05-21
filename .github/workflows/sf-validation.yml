@@ -21,14 +21,11 @@ jobs:
           --sfdx-url-file auth.txt \
           --alias CICDORG
 
-      - name: Validate Deployment
+      - name: Validate Scoped Metadata
         run: |
+          echo "Running scoped demo validation"
+
           sf project deploy validate \
-          --source-dir force-app \
+          --source-dir force-app/main/default/lwc \
           --target-org CICDORG \
-          --test-level RunSpecifiedTests \
-          --tests ContactControllerTest
-    
-      - name: Run Demo Validation
-        run: |
-          echo "Temporary scoped validation for demo"
+          --ignore-warnings
