@@ -1,0 +1,34 @@
+name: Salesforce Validation
+
+on:
+  pull_request:
+
+jobs:
+  validate-deployment:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Salesforce CLI
+        run: npm install @salesforce/cli --global
+
+      - name: Authenticate Org
+        run: |
+          echo "${{ secrets.SF_AUTH_URL }}" > auth.txt
+          sf org login sfdx-url \
+          --sfdx-url-file auth.txt \
+          --alias CICDORG
+
+      - name: Validate Deployment
+        run: |
+          sf project deploy validate \
+          --target-org CICDORG \
+          --source-dir force-app
+
+      - name: Run Apex Tests
+        run: |
+          sf apex run test \
+          --target-org CICDORG \
+          --result-format human
