@@ -12,7 +12,7 @@ jobs:
         run: |
           BRANCH=${{ github.head_ref }}
 
-          if [[ ! "$BRANCH" =~ ^(feature|fix|hotfix)/.+$ ]]; then
+          if [[ ! "$BRANCH" =~ ^(feature|fix|hotfix)/.+$ && "$BRANCH" != "develop" && "$BRANCH" != "main" ]]; then
             echo "Invalid branch name"
             exit 1
           fi
