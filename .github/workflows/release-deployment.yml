@@ -1,11 +1,40 @@
-name: Release Deployment
+name: Salesforce Smart Deployment
 
 on:
   workflow_dispatch:
     inputs:
 
+      deploymentType:
+        description: "Deployment Type"
+        required: true
+        type: choice
+        options:
+          - LatestChanges
+          - SpecificPR
+          - SpecificRelease
+          - SpecificCommit
+          - SpecificComponent
+          - FullDeploy
+
+      prNumber:
+        description: "PR Number"
+        required: false
+
+      releaseTag:
+        description: "Release Tag Example: v1.0.0"
+        required: false
+
+      commitId:
+        description: "Commit ID"
+        required: false
+
+      componentName:
+        description: "Example: lwc:accountViewer"
+        required: false
+
       targetEnvironment:
-        description: "Select Target Environment"
+        description: "Target Org"
+
         required: true
         type: choice
         options:
@@ -40,34 +69,97 @@ jobs:
       - name: Authenticate Org
         run: |
 
-          if [ "${{ github.event.inputs.targetEnvironment }}" = "DEV" ]; then
-            echo "${{ secrets.DEV_ENVIRONMENT_SEC }}" > auth.txt
-          elif [ "${{ github.event.inputs.targetEnvironment }}" = "SP" ]; then
-            echo "${{ secrets.SP_ENVIRONMENT_SEC }}" > auth.txt
+          if [ "${{ github.event.inputs.targetEnvironment }}" = "DEV" ]
+          then
+             echo "${{ secrets.DEV_ENVIRONMENT_SEC }}" > auth.txt
+
+          elif [ "${{ github.event.inputs.targetEnvironment }}" = "SP" ]
+          then
+             echo "${{ secrets.SP_ENVIRONMENT_SEC }}" > auth.txt
+
           else
-            echo "${{ secrets.POD3_ENVIRONMENT_SEC }}" > auth.txt
+             echo "${{ secrets.POD3_ENVIRONMENT_SEC }}" > auth.txt
+
           fi
 
           sf org login sfdx-url \
           --sfdx-url-file auth.txt \
           --alias TARGETORG
 
-      - name: Generate Delta Package
+
+      - name: Generate Deployment Package
         run: |
 
-          LAST_RELEASE=$(git describe --tags --abbrev=0)
+          TYPE=${{ github.event.inputs.deploymentType }}
 
-          echo "Last Release:"
-          echo $LAST_RELEASE
+          if [ "$TYPE" = "LatestChanges" ]
+          then
 
-          sf sgd source delta \
-          --from $LAST_RELEASE \
-          --to HEAD \
-          --output-dir delta
+             sf sgd source delta \
+             --from HEAD~1 \
+             --to HEAD \
+             --output-dir delta
 
-      - name: Deploy Changed Metadata
+          elif [ "$TYPE" = "SpecificPR" ]
+          then
+
+             git fetch origin pull/${{ github.event.inputs.prNumber }}/head:tempPR
+
+             sf sgd source delta \
+             --from main \
+             --to tempPR \
+             --output-dir delta
+
+          elif [ "$TYPE" = "SpecificRelease" ]
+          then
+
+             sf sgd source delta \
+             --from ${{ github.event.inputs.releaseTag }} \
+             --to HEAD \
+             --output-dir delta
+
+          elif [ "$TYPE" = "SpecificCommit" ]
+          then
+
+             sf sgd source delta \
+             --from ${{ github.event.inputs.commitId }} \
+             --to HEAD \
+             --output-dir delta
+
+          elif [ "$TYPE" = "SpecificComponent" ]
+          then
+
+             COMPONENT=$(echo "${{ github.event.inputs.componentName }}" | cut -d':' -f2)
+
+             mkdir componentDeploy
+
+             cp -r force-app/main/default/lwc/$COMPONENT componentDeploy/
+
+          fi
+
+
+      - name: Deploy
+
         run: |
 
-          sf project deploy start \
-          --manifest delta/package/package.xml \
-          --target-org TARGETORG
+          if [ "$TYPE" = "SpecificComponent" ]
+          then
+
+             sf project deploy start \
+             --source-dir componentDeploy \
+             --target-org TARGETORG
+
+          elif [ "$TYPE" != "FullDeploy" ]
+          then
+
+             sf project deploy start \
+             --manifest delta/package/package.xml \
+             --target-org TARGETORG
+
+          else
+
+             sf project deploy start \
+             --source-dir force-app \
+             --target-org TARGETORG
+
+          fi
