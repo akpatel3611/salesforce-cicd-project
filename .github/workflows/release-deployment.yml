@@ -1,0 +1,73 @@
+name: Release Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+
+      targetEnvironment:
+        description: "Select Target Environment"
+        required: true
+        type: choice
+        options:
+          - DEV
+          - SP
+          - POD3
+
+jobs:
+
+  deploy:
+
+    runs-on: ubuntu-latest
+
+    environment:
+      name: ${{ github.event.inputs.targetEnvironment }}
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Salesforce CLI
+        run: |
+          npm install @salesforce/cli --global
+
+      - name: Install Delta Plugin
+        run: |
+          echo y | sf plugins install sfdx-git-delta
+
+      - name: Authenticate Org
+        run: |
+
+          if [ "${{ github.event.inputs.targetEnvironment }}" = "DEV" ]; then
+            echo "${{ secrets.DEV_ENVIRONMENT_SEC }}" > auth.txt
+          elif [ "${{ github.event.inputs.targetEnvironment }}" = "SP" ]; then
+            echo "${{ secrets.SP_ENVIRONMENT_SEC }}" > auth.txt
+          else
+            echo "${{ secrets.POD3_ENVIRONMENT_SEC }}" > auth.txt
+          fi
+
+          sf org login sfdx-url \
+          --sfdx-url-file auth.txt \
+          --alias TARGETORG
+
+      - name: Generate Delta Package
+        run: |
+
+          LAST_RELEASE=$(git describe --tags --abbrev=0)
+
+          echo "Last Release:"
+          echo $LAST_RELEASE
+
+          sf sgd source delta \
+          --from $LAST_RELEASE \
+          --to HEAD \
+          --output-dir delta
+
+      - name: Deploy Changed Metadata
+        run: |
+
+          sf project deploy start \
+          --manifest delta/package/package.xml \
+          --target-org TARGETORG
