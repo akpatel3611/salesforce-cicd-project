@@ -1,0 +1,57 @@
+name: Manual Org Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Select target environment"
+        required: true
+        type: choice
+        options:
+          - DEV
+          - SP
+          - POD3
+
+jobs:
+  deploy:
+
+    runs-on: ubuntu-latest
+
+    environment:
+      name: ${{ github.event.inputs.environment }}
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Salesforce CLI
+        run: |
+          npm install @salesforce/cli --global
+
+      - name: Verify Salesforce CLI
+        run: sf --version
+
+      - name: Authenticate Org
+        run: |
+          if [ "${{ github.event.inputs.environment }}" = "DEV" ]; then
+            echo "${{ secrets.DEV_ENVIRONMENT_SEC }}" > auth.txt
+          elif [ "${{ github.event.inputs.environment }}" = "SP" ]; then
+            echo "${{ secrets.SP_ENVIRONMENT_SEC }}" > auth.txt
+          else
+            echo "${{ secrets.POD3_ENVIRONMENT_SEC }}" > auth.txt
+          fi
+
+          sf org login sfdx-url \
+          --sfdx-url-file auth.txt \
+          --alias TARGETORG
+
+      - name: Verify Org
+        run: |
+          sf org list
+
+      - name: Deploy Metadata
+        run: |
+          sf project deploy start \
+          --source-dir force-app \
+          --target-org TARGETORG
