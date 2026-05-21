@@ -1,4 +1,4 @@
-name: PR Title Validation
+name: feat: add PR title validation workflow
 
 on:
   pull_request:
@@ -13,7 +13,7 @@ jobs:
         run: |
           TITLE="${{ github.event.pull_request.title }}"
 
-          if [[ ! "$TITLE" =~ ^(feat|fix|docs|chore):.+$ ]]; then
+          if [[ ! "$TITLE" =~ ^(feat|fix|docs|chore|refactor|test):.+$ ]]; then
             echo "Invalid PR title"
             exit 1
           fi
