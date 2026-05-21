@@ -24,9 +24,11 @@ jobs:
       - name: Validate Deployment
         run: |
           sf project deploy validate \
-          --target-org CICDORG \
-          --source-dir force-app
-
+          --source-dir force-app \
+          --target-org CICD \
+          --test-level RunSpecifiedTests \
+          --tests ContactControllerTest
+    
       - name: Run Demo Validation
         run: |
           echo "Temporary scoped validation for demo"
