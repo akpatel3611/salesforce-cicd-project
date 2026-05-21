@@ -1,0 +1,24 @@
+name: Code Quality Validation
+
+on:
+  pull_request:
+
+jobs:
+  code-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Salesforce CLI
+        run: npm install @salesforce/cli --global
+
+      - name: Install Scanner
+        run: sf plugins install @salesforce/sfdx-scanner
+
+      - name: Run scanner
+        run: |
+          sf scanner run \
+          --target "force-app" \
+          --format table
