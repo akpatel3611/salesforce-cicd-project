@@ -1,10 +1,24 @@
-name: Manual Org Deployment
+name: Salesforce Deployment
 
 on:
   workflow_dispatch:
     inputs:
+
+      deployMode:
+        description: "Deployment Mode"
+        required: true
+        type: choice
+        options:
+          - LastMergedPR
+          - SpecificPR
+          - FullDeploy
+
+      prNumber:
+        description: "PR Number (only for SpecificPR)"
+        required: false
+
       environment:
-        description: "Select target environment"
+        description: "Target Org"
         required: true
         type: choice
         options:
@@ -13,6 +27,7 @@ on:
           - POD3
 
 jobs:
+
   deploy:
 
     runs-on: ubuntu-latest
@@ -22,36 +37,76 @@ jobs:
 
     steps:
 
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Salesforce CLI
         run: |
           npm install @salesforce/cli --global
 
-      - name: Verify Salesforce CLI
-        run: sf --version
-
-      - name: Authenticate Org
+      - name: Install Delta Plugin
         run: |
+          echo y | sf plugins install sfdx-git-delta
+
+      - name: Authenticate
+
+        run: |
+
           if [ "${{ github.event.inputs.environment }}" = "DEV" ]; then
-            echo "${{ secrets.DEV_ENVIRONMENT_SEC }}" > auth.txt
+             echo "${{ secrets.DEV_ENVIRONMENT_SEC }}" > auth.txt
           elif [ "${{ github.event.inputs.environment }}" = "SP" ]; then
-            echo "${{ secrets.SP_ENVIRONMENT_SEC }}" > auth.txt
+             echo "${{ secrets.SP_ENVIRONMENT_SEC }}" > auth.txt
           else
-            echo "${{ secrets.POD3_ENVIRONMENT_SEC }}" > auth.txt
+             echo "${{ secrets.POD3_ENVIRONMENT_SEC }}" > auth.txt
           fi
 
           sf org login sfdx-url \
           --sfdx-url-file auth.txt \
           --alias TARGETORG
 
-      - name: Verify Org
-        run: |
-          sf org list
+      - name: Generate Package
 
-      - name: Deploy Metadata
+        if: github.event.inputs.deployMode != 'FullDeploy'
+
         run: |
-          sf project deploy start \
-          --source-dir force-app \
-          --target-org TARGETORG
+
+          if [ "${{ github.event.inputs.deployMode }}" = "LastMergedPR" ]
+          then
+
+            sf sgd source delta \
+            --to HEAD \
+            --from HEAD~1 \
+            --output-dir delta
+
+          else
+
+            git fetch origin pull/${{ github.event.inputs.prNumber }}/head:tempPR
+
+            sf sgd source delta \
+            --to tempPR \
+            --from main \
+            --output-dir delta
+
+          fi
+
+      - name: Deploy Delta
+
+        if: github.event.inputs.deployMode != 'FullDeploy'
+
+        run: |
+
+            sf project deploy start \
+            --manifest delta/package/package.xml \
+            --target-org TARGETORG
+
+      - name: Full Deploy
+
+        if: github.event.inputs.deployMode == 'FullDeploy'
+
+        run: |
+
+            sf project deploy start \
+            --source-dir force-app \
+            --target-org TARGETORG
