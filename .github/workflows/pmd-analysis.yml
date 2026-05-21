@@ -1,0 +1,28 @@
+name: PMD Analysis
+
+on:
+  pull_request:
+    branches:
+      - develop
+      - main
+
+jobs:
+  pmd-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Salesforce CLI
+        run: npm install @salesforce/cli --global
+
+      - name: Install Scanner
+        run: sf plugins install @salesforce/sfdx-scanner
+
+      - name: Run PMD Analysis
+        run: |
+          sf scanner run \
+          --target "force-app" \
+          --format table
