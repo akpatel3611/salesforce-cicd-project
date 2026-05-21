@@ -1,0 +1,21 @@
+name: SonarQube Analysis
+
+on:
+  pull_request:
+    branches:
+      - develop
+      - main
+
+jobs:
+  sonar-analysis:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
