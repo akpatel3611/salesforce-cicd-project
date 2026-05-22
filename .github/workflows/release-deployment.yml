@@ -72,27 +72,28 @@ jobs:
           --alias TARGETORG
 
 
-      - name: Generate Package
-        run: |
+            - name: Generate Package
+              run: |
 
-          TYPE="${{ github.event.inputs.deploymentType }}"
+                TYPE="${{ github.event.inputs.deploymentType }}"
 
-          if [ "$TYPE" = "SpecificPR" ]
-          then
+                if [ "$TYPE" = "SpecificPR" ]
+                then
 
-              git fetch origin pull/${{ github.event.inputs.prNumber }}/head:tempPR
+              mkdir -p package
+
+              git fetch origin pull/${{ github.event.inputs.prNumber }}/merge:mergePR
 
               sf sgd source delta \
-              --from tempPR~1 \
-              --to tempPR \
-              --output-dir package
+              --from mergePR^1 \
+              --to mergePR \
+              --output-dir ./package
 
-              echo "Generated package content"
+              echo "Generated package files"
 
-              ls -R package || true
+              find package || true
 
           fi
-
 
       - name: Deploy
         run: |
