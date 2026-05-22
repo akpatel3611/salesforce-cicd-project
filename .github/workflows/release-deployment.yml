@@ -1,5 +1,20 @@
 name: Salesforce Smart Deployment
 
+# ============================================================
+#  DEPLOYMENT MODES:
+#
+#  SpecificPR        → Deploy only the changes from a specific
+#                      PR number (works for old + new PRs)
+#
+#  SpecificComponent → Deploy one specific metadata component
+#                      (LWC, Apex class, trigger, flow, etc.)
+#
+#  LatestMergeToMain → Deploy only what the most recent merge
+#                      into main introduced (delta only)
+#
+#  FullDeploy        → Deploy entire force-app directory
+# ============================================================
+
 on:
   workflow_dispatch:
     inputs:
@@ -11,14 +26,32 @@ on:
         options:
           - SpecificPR
           - SpecificComponent
+          - LatestMergeToMain
           - FullDeploy
 
       prNumber:
-        description: "PR Number only (Example: 41)"
+        description: "PR Number — for SpecificPR only (Example: 41)"
         required: false
 
+      componentType:
+        description: "Component Type — for SpecificComponent only"
+        required: false
+        type: choice
+        options:
+          - lwc
+          - classes
+          - triggers
+          - flows
+          - objects
+          - permissionsets
+          - profiles
+          - layouts
+          - pages
+          - staticresources
+          - customMetadata
+
       componentName:
-        description: "LWC Component Name (Example: accountViewer)"
+        description: "Component Name — for SpecificComponent only (Example: accountViewer)"
         required: false
 
       targetEnvironment:
@@ -30,131 +63,404 @@ on:
           - SP
           - POD3
 
+      testLevel:
+        description: "Apex Test Level"
+        required: true
+        type: choice
+        options:
+          - RunLocalTests
+          - NoTestRun
+          - RunSpecifiedTests
+          - RunAllTestsInOrg
 
+
+# ============================================================
 jobs:
 
-  deploy:
-
+  validate-inputs:
+    name: Validate Inputs
     runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Check SpecificPR inputs
+        if: github.event.inputs.deploymentType == 'SpecificPR'
+        run: |
+          if [ -z "${{ github.event.inputs.prNumber }}" ]; then
+            echo "ERROR: PR Number is required when deploymentType is SpecificPR"
+            echo "       Example: Enter 41 in the PR Number field"
+            exit 1
+          fi
+
+          # Validate PR number is a positive integer
+          PR="${{ github.event.inputs.prNumber }}"
+          if ! [[ "$PR" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: PR Number must be a number only. Got: $PR"
+            exit 1
+          fi
+
+          echo "PR Number validated: $PR"
+
+      - name: Check SpecificComponent inputs
+        if: github.event.inputs.deploymentType == 'SpecificComponent'
+        run: |
+          if [ -z "${{ github.event.inputs.componentName }}" ]; then
+            echo "ERROR: Component Name is required when deploymentType is SpecificComponent"
+            echo "       Example: Enter accountViewer in the Component Name field"
+            exit 1
+          fi
+
+          echo "Component validated: ${{ github.event.inputs.componentType }}/${{ github.event.inputs.componentName }}"
+
+      - name: Print deployment summary
+        run: |
+          echo "============================================"
+          echo "  SALESFORCE SMART DEPLOYMENT"
+          echo "============================================"
+          echo "  Mode     : ${{ github.event.inputs.deploymentType }}"
+          echo "  PR Number: ${{ github.event.inputs.prNumber }}"
+          echo "  Component: ${{ github.event.inputs.componentType }}/${{ github.event.inputs.componentName }}"
+          echo "  Target   : ${{ github.event.inputs.targetEnvironment }}"
+          echo "  TestLevel: ${{ github.event.inputs.testLevel }}"
+          echo "  Triggered: ${{ github.actor }}"
+          echo "  Time     : $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "============================================"
+
+
+  deploy:
+    name: Deploy to ${{ github.event.inputs.targetEnvironment }}
+    runs-on: ubuntu-latest
+    needs: validate-inputs
 
     environment:
       name: ${{ github.event.inputs.targetEnvironment }}
 
     steps:
 
+      # ----------------------------------------------------------
+      # STEP 1: Checkout with full history
+      # fetch-depth: 0 is REQUIRED for sfdx-git-delta to work
+      # It needs the full git history to compute deltas
+      # ----------------------------------------------------------
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
 
+      # ----------------------------------------------------------
+      # STEP 2: Install Salesforce CLI
+      # ----------------------------------------------------------
       - name: Install Salesforce CLI
         run: |
           npm install @salesforce/cli --global
-
-
-      - name: Verify CLI
-        run: |
           sf --version
 
 
-      - name: Install Delta Plugin
+      # ----------------------------------------------------------
+      # STEP 3: Install sfdx-git-delta plugin
+      # Used for generating package.xml from git diff
+      # ----------------------------------------------------------
+      - name: Install Delta Plugin (sfdx-git-delta)
         run: |
-          yes | sf plugins install sfdx-git-delta
+          echo y | sf plugins install sfdx-git-delta
+          sf sgd --version
 
 
-      - name: Authenticate Org
+      # ----------------------------------------------------------
+      # STEP 4: Authenticate target org using stored secret
+      # ----------------------------------------------------------
+      - name: Authenticate Target Org
         run: |
 
-          if [ "${{ github.event.inputs.targetEnvironment }}" = "DEV" ]
-          then
-              echo "${{ secrets.DEV_ENVIRONMENT_SEC }}" > auth.txt
+          TARGET="${{ github.event.inputs.targetEnvironment }}"
 
-          elif [ "${{ github.event.inputs.targetEnvironment }}" = "SP" ]
-          then
-              echo "${{ secrets.SP_ENVIRONMENT_SEC }}" > auth.txt
+          if [ "$TARGET" = "DEV" ]; then
+            echo "${{ secrets.DEV_ENVIRONMENT_SEC }}" > auth.txt
+
+          elif [ "$TARGET" = "SP" ]; then
+            echo "${{ secrets.SP_ENVIRONMENT_SEC }}" > auth.txt
 
           else
-              echo "${{ secrets.POD3_ENVIRONMENT_SEC }}" > auth.txt
+            echo "${{ secrets.POD3_ENVIRONMENT_SEC }}" > auth.txt
           fi
 
           sf org login sfdx-url \
-          --sfdx-url-file auth.txt \
-          --alias TARGETORG
+            --sfdx-url-file auth.txt \
+            --alias TARGETORG
+
+          # Clean up auth file immediately
+          rm -f auth.txt
+
+          echo "Authenticated to org: $TARGET"
+          sf org display --target-org TARGETORG
 
 
-      - name: Generate PR Package
+      # ----------------------------------------------------------
+      # STEP 5A: SpecificPR — Build package from a specific PR
+      #
+      # ROOT CAUSE FIX:
+      #   OLD (broken): git fetch origin pull/N/merge:mergePR
+      #     → pull/N/merge only exists while PR is OPEN
+      #     → For merged/old PRs this ref is DELETED → FAILS
+      #
+      #   NEW (fixed):  git fetch origin pull/N/head:prBranch
+      #     → pull/N/head exists for ALL PRs (open + merged + closed)
+      #     → GitHub keeps this ref for 90 days after PR close
+      #     → Then find merge-base to get FULL PR delta
+      # ----------------------------------------------------------
+      - name: "[SpecificPR] Fetch PR and Generate Delta Package"
         if: github.event.inputs.deploymentType == 'SpecificPR'
-
         run: |
 
+          PR_NUMBER="${{ github.event.inputs.prNumber }}"
+          echo "Fetching PR #$PR_NUMBER..."
+
+          # ✅ FIXED: Use pull/N/head instead of pull/N/merge
+          # /head works for OPEN and MERGED/CLOSED PRs
+          # /merge only works for OPEN PRs → causes error for old PRs
+          git fetch origin "pull/${PR_NUMBER}/head:prBranch" || {
+            echo ""
+            echo "ERROR: Could not fetch PR #${PR_NUMBER}"
+            echo "Possible reasons:"
+            echo "  1. PR number does not exist in this repository"
+            echo "  2. PR is older than 90 days (GitHub ref retention limit)"
+            echo "  3. Network issue"
+            exit 1
+          }
+
+          echo "PR fetched successfully"
+          echo "PR HEAD commit: $(git rev-parse prBranch)"
+
+          # ✅ FIXED: Find the merge-base (where PR branched from main)
+          # This gives us the FULL delta for the entire PR, not just 1 commit
+          echo "Finding merge base with main..."
+          git fetch origin main
+          MERGE_BASE=$(git merge-base origin/main prBranch)
+
+          if [ -z "$MERGE_BASE" ]; then
+            echo "ERROR: Could not find merge base between PR and main"
+            exit 1
+          fi
+
+          echo "Merge base commit: $MERGE_BASE"
+          echo "PR changed commits:"
+          git log --oneline ${MERGE_BASE}..prBranch
+
+          # Generate delta package using sfdx-git-delta
+          echo ""
+          echo "Generating Salesforce metadata package..."
           mkdir -p package
 
-          echo "Fetching PR..."
+          sf sgd source delta \
+            --from "$MERGE_BASE" \
+            --to prBranch \
+            --output-dir package \
+            --source-dir force-app
 
-          git fetch origin pull/${{ github.event.inputs.prNumber }}/merge:mergePR
+          echo ""
+          echo "Package generated:"
+          if [ -f package/package/package.xml ]; then
+            cat package/package/package.xml
+          elif [ -f package/package.xml ]; then
+            cat package/package.xml
+          else
+            echo "Package structure:"
+            ls -R package/
+          fi
 
-          echo "Generating package..."
+
+      - name: "[SpecificPR] Validate Package Exists"
+        if: github.event.inputs.deploymentType == 'SpecificPR'
+        run: |
+
+          # sfdx-git-delta puts package.xml inside package/package/
+          PKG_PATH=""
+          if [ -f "package/package/package.xml" ]; then
+            PKG_PATH="package/package/package.xml"
+          elif [ -f "package/package.xml" ]; then
+            PKG_PATH="package/package.xml"
+          fi
+
+          if [ -z "$PKG_PATH" ]; then
+            echo ""
+            echo "WARNING: No Salesforce metadata found in PR #${{ github.event.inputs.prNumber }}"
+            echo "This PR may contain only:"
+            echo "  - Non-metadata files (README, config, scripts)"
+            echo "  - Files outside force-app directory"
+            echo ""
+            echo "Nothing to deploy."
+            exit 0
+          fi
+
+          echo "Package found at: $PKG_PATH"
+          echo "PKG_PATH=$PKG_PATH" >> $GITHUB_ENV
+
+
+      # ----------------------------------------------------------
+      # STEP 5B: LatestMergeToMain — Deploy only the last merged PR
+      # ----------------------------------------------------------
+      - name: "[LatestMergeToMain] Generate Delta from Latest Merge"
+        if: github.event.inputs.deploymentType == 'LatestMergeToMain'
+        run: |
+
+          echo "Finding latest merge commit in main..."
+
+          # Get the latest merge commit SHA
+          LATEST_MERGE=$(git log --merges -n 1 --format="%H" origin/main 2>/dev/null || \
+                         git log --merges -n 1 --format="%H" HEAD)
+
+          if [ -z "$LATEST_MERGE" ]; then
+            echo "No merge commits found in main. Checking for direct commits..."
+            # Fallback: last 1 commit vs previous
+            LATEST_MERGE=$(git rev-parse HEAD)
+            PREV_COMMIT=$(git rev-parse HEAD~1)
+          else
+            # Get the commit just before the latest merge
+            PREV_COMMIT=$(git rev-parse ${LATEST_MERGE}^1)
+          fi
+
+          echo "Latest merge commit : $LATEST_MERGE"
+          echo "Previous commit     : $PREV_COMMIT"
+          echo ""
+          echo "Commit message:"
+          git log --oneline -1 $LATEST_MERGE
+          echo ""
+          echo "Files changed in this merge:"
+          git diff --name-only $PREV_COMMIT $LATEST_MERGE
+
+          # Generate delta package
+          echo ""
+          echo "Generating Salesforce metadata package..."
+          mkdir -p package
 
           sf sgd source delta \
-          --from mergePR^1 \
-          --to mergePR \
-          --output-dir package
+            --from "$PREV_COMMIT" \
+            --to "$LATEST_MERGE" \
+            --output-dir package \
+            --source-dir force-app
 
-          echo "Generated package content"
+          echo ""
+          echo "Package generated:"
+          ls -R package/ || true
 
-          ls -R package || true
-
-
-      - name: Validate Package
-        if: github.event.inputs.deploymentType == 'SpecificPR'
-
-        run: |
-
-          if [ ! -f package/package.xml ]
-          then
-
-              echo "No metadata found in PR"
-
-              exit 1
-
-          fi
-
-
-      - name: Deploy Metadata
-
-        run: |
-
-          TYPE="${{ github.event.inputs.deploymentType }}"
-
-          if [ "$TYPE" = "SpecificComponent" ]
-          then
-
-              COMPONENT="${{ github.event.inputs.componentName }}"
-
-              echo "Deploying component: $COMPONENT"
-
-              sf project deploy start \
-              --source-dir force-app/main/default/lwc/$COMPONENT \
-              --target-org TARGETORG
-
-
-          elif [ "$TYPE" = "SpecificPR" ]
-          then
-
-              echo "Deploying PR package"
-
-              sf project deploy start \
-              --manifest package/package.xml \
-              --target-org TARGETORG
-
-
+          # Set package path
+          if [ -f "package/package/package.xml" ]; then
+            echo "PKG_PATH=package/package/package.xml" >> $GITHUB_ENV
+          elif [ -f "package/package.xml" ]; then
+            echo "PKG_PATH=package/package.xml" >> $GITHUB_ENV
           else
-
-              echo "Deploying full project"
-
-              sf project deploy start \
-              --source-dir force-app \
-              --target-org TARGETORG
-
+            echo "PKG_PATH=" >> $GITHUB_ENV
           fi
+
+
+      # ----------------------------------------------------------
+      # STEP 6: Deploy based on deployment type
+      # ----------------------------------------------------------
+      - name: "[SpecificPR] Deploy PR Package"
+        if: |
+          github.event.inputs.deploymentType == 'SpecificPR' &&
+          env.PKG_PATH != ''
+        run: |
+
+          echo "Deploying PR #${{ github.event.inputs.prNumber }} to ${{ github.event.inputs.targetEnvironment }}..."
+
+          sf project deploy start \
+            --manifest "${{ env.PKG_PATH }}" \
+            --target-org TARGETORG \
+            --test-level ${{ github.event.inputs.testLevel }} \
+            --wait 30 \
+            --verbose
+
+          echo "Deployment complete!"
+
+
+      - name: "[LatestMergeToMain] Deploy Latest Merge Package"
+          if: |
+            github.event.inputs.deploymentType == 'LatestMergeToMain' &&
+            env.PKG_PATH != ''
+        run: |
+
+          echo "Deploying latest merge to ${{ github.event.inputs.targetEnvironment }}..."
+
+          sf project deploy start \
+            --manifest "${{ env.PKG_PATH }}" \
+            --target-org TARGETORG \
+            --test-level ${{ github.event.inputs.testLevel }} \
+            --wait 30 \
+            --verbose
+
+          echo "Deployment complete!"
+
+
+      - name: "[LatestMergeToMain] Nothing to Deploy"
+        if: |
+          github.event.inputs.deploymentType == 'LatestMergeToMain' &&
+          env.PKG_PATH == ''
+        run: |
+          echo "No Salesforce metadata changes found in the latest merge."
+          echo "The latest merge may contain only non-metadata files."
+
+
+      - name: "[SpecificComponent] Deploy Single Component"
+        if: github.event.inputs.deploymentType == 'SpecificComponent'
+        run: |
+
+          COMP_TYPE="${{ github.event.inputs.componentType }}"
+          COMP_NAME="${{ github.event.inputs.componentName }}"
+          COMP_PATH="force-app/main/default/${COMP_TYPE}/${COMP_NAME}"
+
+          echo "Deploying: $COMP_PATH"
+
+          if [ ! -e "$COMP_PATH" ]; then
+            echo "ERROR: Component not found at path: $COMP_PATH"
+            echo ""
+            echo "Available ${COMP_TYPE} components:"
+            ls "force-app/main/default/${COMP_TYPE}/" 2>/dev/null || echo "  (directory not found)"
+            exit 1
+          fi
+
+          sf project deploy start \
+            --source-dir "$COMP_PATH" \
+            --target-org TARGETORG \
+            --test-level ${{ github.event.inputs.testLevel }} \
+            --wait 30 \
+            --verbose
+
+          echo "Component deployed successfully!"
+
+
+      - name: "[FullDeploy] Deploy Full Project"
+        if: github.event.inputs.deploymentType == 'FullDeploy'
+        run: |
+
+          echo "Full deployment to ${{ github.event.inputs.targetEnvironment }}..."
+          echo "This will deploy everything in force-app/"
+
+          sf project deploy start \
+            --source-dir force-app \
+            --target-org TARGETORG \
+            --test-level ${{ github.event.inputs.testLevel }} \
+            --wait 60 \
+            --verbose
+
+          echo "Full deployment complete!"
+
+
+      # ----------------------------------------------------------
+      # STEP 7: Post-deployment verification
+      # ----------------------------------------------------------
+      - name: Deployment Summary
+        if: always()
+        run: |
+          echo ""
+          echo "============================================"
+          echo "  DEPLOYMENT RESULT"
+          echo "============================================"
+          echo "  Mode     : ${{ github.event.inputs.deploymentType }}"
+          echo "  PR Number: ${{ github.event.inputs.prNumber }}"
+          echo "  Component: ${{ github.event.inputs.componentType }}/${{ github.event.inputs.componentName }}"
+          echo "  Target   : ${{ github.event.inputs.targetEnvironment }}"
+          echo "  Status   : ${{ job.status }}"
+          echo "  Time     : $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "============================================"
