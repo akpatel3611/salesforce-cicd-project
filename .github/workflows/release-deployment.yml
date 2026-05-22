@@ -14,11 +14,11 @@ on:
           - FullDeploy
 
       prNumber:
-        description: "PR Number (Required if SpecificPR)"
+        description: "PR Number"
         required: false
 
       componentType:
-        description: "Component Type (Required if SpecificComponent)"
+        description: "Component Type"
         required: false
         type: choice
         options:
@@ -29,7 +29,7 @@ on:
           - objects
 
       componentName:
-        description: "Component Name (Required if SpecificComponent)"
+        description: "Component Name"
         required: false
 
       targetEnvironment:
@@ -58,16 +58,18 @@ jobs:
       - name: Validate PR Input
         if: github.event.inputs.deploymentType == 'SpecificPR'
         run: |
-          if [ -z "${{ github.event.inputs.prNumber }}" ]; then
-              echo "Error: PR number is required for SpecificPR deployment."
+          if [ -z "${{ github.event.inputs.prNumber }}" ]
+          then
+              echo "PR number required"
               exit 1
           fi
 
       - name: Validate Component
         if: github.event.inputs.deploymentType == 'SpecificComponent'
         run: |
-          if [ -z "${{ github.event.inputs.componentName }}" ]; then
-              echo "Error: Component name is required for SpecificComponent deployment."
+          if [ -z "${{ github.event.inputs.componentName }}" ]
+          then
+              echo "Component name required"
               exit 1
           fi
 
@@ -89,7 +91,7 @@ jobs:
 
       - name: Install Delta Plugin
         run: |
-          echo y | sf plugins install sfdx-git-delta
+          yes | sf plugins install sfdx-git-delta
 
       - name: Authenticate Target Org
         run: |
@@ -107,7 +109,7 @@ jobs:
           rm auth.txt
           sf org display --target-org TARGETORG
 
-      - name: Generate Package (Delta)
+      - name: Generate Delta Package
         if: |
           github.event.inputs.deploymentType == 'SpecificPR' ||
           github.event.inputs.deploymentType == 'LatestMergeToMain'
@@ -115,87 +117,83 @@ jobs:
           mkdir -p package
 
           if [ "${{ github.event.inputs.deploymentType }}" = "SpecificPR" ]; then
-              # 1. Fetch PR and Main
               git fetch origin pull/${{ github.event.inputs.prNumber }}/head:prBranch
               git fetch origin main
               
-              # 2. 🔥 FIX: Checkout the PR branch so the workspace has the exact modified files
+              # Ensuring exactly the PR's code is present in working directory
               git checkout prBranch
               
-              # 3. Get merge base and generate delta
               BASE=$(git merge-base origin/main HEAD)
-              sf sgd source delta \
-                  --from "$BASE" \
-                  --to HEAD \
-                  --output-dir package \
-                  --source-dir force-app
-
-          elif [ "${{ github.event.inputs.deploymentType }}" = "LatestMergeToMain" ]; then
-              # 🔥 FIX: Ensure we are safely on main and fully updated
+              
+              sf sgd source delta --from "$BASE" --to HEAD --output-dir package --source-dir force-app
+              
+          else
               git checkout main
+              git pull origin main
               
-              LATEST=$(git log --merges -n 1 --format="%H" 2>/dev/null || git rev-parse HEAD)
-              
-              # Safely find the previous commit
-              if [ -z "$LATEST" ] || [ "$LATEST" = "$(git rev-parse HEAD)" ]; then
-                  PREVIOUS=$(git rev-parse HEAD~1)
+              # Safe fallback logic for LatestMerge
+              LATEST=$(git log --merges -1 --format="%H" 2>/dev/null || echo "")
+              if [ -z "$LATEST" ]; then
                   LATEST=$(git rev-parse HEAD)
+                  PREVIOUS=$(git rev-parse HEAD~1)
               else
                   PREVIOUS=$(git rev-parse ${LATEST}^1)
               fi
-
-              sf sgd source delta \
-                  --from "$PREVIOUS" \
-                  --to "$LATEST" \
-                  --output-dir package \
-                  --source-dir force-app
+              
+              sf sgd source delta --from "$PREVIOUS" --to "$LATEST" --output-dir package --source-dir force-app
           fi
 
-          # Export PKG_PATH
-          if [ -f package/package/package.xml ]; then
-              echo "PKG_PATH=package/package/package.xml" >> $GITHUB_ENV
-          elif [ -f package/package.xml ]; then
-              echo "PKG_PATH=package/package.xml" >> $GITHUB_ENV
-          else
-              echo "PKG_PATH=" >> $GITHUB_ENV
-          fi
-
-      - name: Validate Generated Package
-        if: env.PKG_PATH != ''
+      - name: Deploy Delta Package (PR or LatestMerge)
+        if: |
+          github.event.inputs.deploymentType == 'SpecificPR' ||
+          github.event.inputs.deploymentType == 'LatestMergeToMain'
         run: |
-          COMPONENT_COUNT=$(grep -c "<members>" "${{ env.PKG_PATH }}" || true)
-          if [ "$COMPONENT_COUNT" -eq 0 ]; then
-              echo "No metadata found in the delta. Nothing to deploy."
+          # Base deploy command with --ignore-conflicts to bypass sandbox tracking issues
+          DEPLOY_CMD="sf project deploy start --target-org TARGETORG --test-level ${{ github.event.inputs.testLevel }} --wait 30 --ignore-conflicts"
+          
+          HAS_CHANGES=false
+
+          # 1. Check if there are added/modified files
+          if [ -f "package/package/package.xml" ] && grep -q "<members>" "package/package/package.xml"; then
+              echo "✅ Found added/modified files in Delta."
+              # FIX: Deploying the isolated folder directly instead of using manifest
+              DEPLOY_CMD="$DEPLOY_CMD --source-dir package/force-app"
+              HAS_CHANGES=true
+          fi
+
+          # 2. Check if there are deleted files (destructive changes)
+          if [ -f "package/destructiveChanges/destructiveChanges.xml" ] && grep -q "<members>" "package/destructiveChanges/destructiveChanges.xml"; then
+              echo "✅ Found deleted files (destructive changes)."
+              DEPLOY_CMD="$DEPLOY_CMD --post-destructive-changes package/destructiveChanges/destructiveChanges.xml"
+              HAS_CHANGES=true
+          fi
+
+          # 3. If no changes exist, exit gracefully without failing pipeline
+          if [ "$HAS_CHANGES" = false ]; then
+              echo "🚀 No metadata changes found to deploy. Pipeline exiting successfully."
               exit 0
           fi
-          echo "Found $COMPONENT_COUNT components to deploy."
 
-      - name: Deploy PR or Latest Merge Package
-        if: |
-          (github.event.inputs.deploymentType == 'SpecificPR' || 
-          github.event.inputs.deploymentType == 'LatestMergeToMain') && 
-          env.PKG_PATH != ''
-        run: |
-          sf project deploy start \
-            --manifest "${{ env.PKG_PATH }}" \
-            --target-org TARGETORG \
-            --test-level ${{ github.event.inputs.testLevel }} \
-            --wait 30
+          echo "Executing Deployment Command:"
+          echo "$DEPLOY_CMD"
+          
+          # Run the dynamically built command
+          eval $DEPLOY_CMD
 
       - name: Deploy Specific Component
         if: github.event.inputs.deploymentType == 'SpecificComponent'
         run: |
           sf project deploy start \
-            --source-dir force-app/main/default/${{ github.event.inputs.componentType }}/${{ github.event.inputs.componentName }} \
-            --target-org TARGETORG \
-            --test-level ${{ github.event.inputs.testLevel }} \
-            --wait 30
+          --source-dir force-app/main/default/${{ github.event.inputs.componentType }}/${{ github.event.inputs.componentName }} \
+          --target-org TARGETORG \
+          --test-level ${{ github.event.inputs.testLevel }} \
+          --wait 30 --ignore-conflicts
 
       - name: Full Deploy
         if: github.event.inputs.deploymentType == 'FullDeploy'
         run: |
           sf project deploy start \
-            --source-dir force-app \
-            --target-org TARGETORG \
-            --test-level ${{ github.event.inputs.testLevel }} \
-            --wait 60
+          --source-dir force-app \
+          --target-org TARGETORG \
+          --test-level ${{ github.event.inputs.testLevel }} \
+          --wait 60 --ignore-conflicts
