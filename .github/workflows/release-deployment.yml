@@ -18,7 +18,7 @@ on:
         required: false
 
       componentName:
-        description: "Component Name only (Example: accountViewer)"
+        description: "LWC Component Name (Example: accountViewer)"
         required: false
 
       targetEnvironment:
@@ -30,7 +30,9 @@ on:
           - SP
           - POD3
 
+
 jobs:
+
   deploy:
 
     runs-on: ubuntu-latest
@@ -40,31 +42,40 @@ jobs:
 
     steps:
 
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install CLI
-        run: npm install @salesforce/cli --global
+
+      - name: Install Salesforce CLI
+        run: |
+          npm install @salesforce/cli --global
+
+
+      - name: Verify CLI
+        run: |
+          sf --version
+
 
       - name: Install Delta Plugin
         run: |
-          echo y | sf plugins install sfdx-git-delta
+          yes | sf plugins install sfdx-git-delta
 
-      - name: Authenticate
+
+      - name: Authenticate Org
         run: |
 
           if [ "${{ github.event.inputs.targetEnvironment }}" = "DEV" ]
           then
-             echo "${{ secrets.DEV_ENVIRONMENT_SEC }}" > auth.txt
+              echo "${{ secrets.DEV_ENVIRONMENT_SEC }}" > auth.txt
 
           elif [ "${{ github.event.inputs.targetEnvironment }}" = "SP" ]
           then
-             echo "${{ secrets.SP_ENVIRONMENT_SEC }}" > auth.txt
+              echo "${{ secrets.SP_ENVIRONMENT_SEC }}" > auth.txt
 
           else
-             echo "${{ secrets.POD3_ENVIRONMENT_SEC }}" > auth.txt
+              echo "${{ secrets.POD3_ENVIRONMENT_SEC }}" > auth.txt
           fi
 
           sf org login sfdx-url \
@@ -72,30 +83,46 @@ jobs:
           --alias TARGETORG
 
 
-            - name: Generate Package
-              run: |
+      - name: Generate PR Package
+        if: github.event.inputs.deploymentType == 'SpecificPR'
 
-                TYPE="${{ github.event.inputs.deploymentType }}"
+        run: |
 
-                if [ "$TYPE" = "SpecificPR" ]
-                then
+          mkdir -p package
 
-              mkdir -p package
+          echo "Fetching PR..."
 
-              git fetch origin pull/${{ github.event.inputs.prNumber }}/merge:mergePR
+          git fetch origin pull/${{ github.event.inputs.prNumber }}/merge:mergePR
 
-              sf sgd source delta \
-              --from mergePR^1 \
-              --to mergePR \
-              --output-dir ./package
+          echo "Generating package..."
 
-              echo "Generated package files"
+          sf sgd source delta \
+          --from mergePR^1 \
+          --to mergePR \
+          --output-dir package
 
-              find package || true
+          echo "Generated package content"
+
+          ls -R package || true
+
+
+      - name: Validate Package
+        if: github.event.inputs.deploymentType == 'SpecificPR'
+
+        run: |
+
+          if [ ! -f package/package.xml ]
+          then
+
+              echo "No metadata found in PR"
+
+              exit 1
 
           fi
 
-      - name: Deploy
+
+      - name: Deploy Metadata
+
         run: |
 
           TYPE="${{ github.event.inputs.deploymentType }}"
@@ -105,6 +132,8 @@ jobs:
 
               COMPONENT="${{ github.event.inputs.componentName }}"
 
+              echo "Deploying component: $COMPONENT"
+
               sf project deploy start \
               --source-dir force-app/main/default/lwc/$COMPONENT \
               --target-org TARGETORG
@@ -113,22 +142,16 @@ jobs:
           elif [ "$TYPE" = "SpecificPR" ]
           then
 
-              if [ -f package/package.xml ]
-              then
+              echo "Deploying PR package"
 
-                  sf project deploy start \
-                  --manifest package/package.xml \
-                  --target-org TARGETORG
+              sf project deploy start \
+              --manifest package/package.xml \
+              --target-org TARGETORG
 
-              else
-
-                  echo "No metadata found"
-
-                  exit 1
-
-              fi
 
           else
+
+              echo "Deploying full project"
 
               sf project deploy start \
               --source-dir force-app \
