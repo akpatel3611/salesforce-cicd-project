@@ -2,7 +2,7 @@ public with sharing class AsyncOperationController {
 
     @AuraEnabled(cacheable=false)
     public static List<Async_Operation_Log__c> getRecentOperations(Id recordId) {
-
+        System.debug('Fetching recent operations for recordId: ' + recordId);
         return [
             SELECT
                 Id,
