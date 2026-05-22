@@ -15,11 +15,11 @@ on:
           - FullDeploy
 
       prNumber:
-        description: "PR Number — for SpecificPR only (Example: 41)"
+        description: "PR Number"
         required: false
 
       componentType:
-        description: "Component Type — for SpecificComponent only"
+        description: "Component Type"
         required: false
         type: choice
         options:
@@ -28,15 +28,9 @@ on:
           - triggers
           - flows
           - objects
-          - permissionsets
-          - profiles
-          - layouts
-          - pages
-          - staticresources
-          - customMetadata
 
       componentName:
-        description: "Component Name — for SpecificComponent only"
+        description: "Component Name"
         required: false
 
       targetEnvironment:
@@ -49,88 +43,64 @@ on:
           - POD3
 
       testLevel:
-        description: "Apex Test Level"
+        description: "Test Level"
         required: true
         type: choice
         options:
           - RunLocalTests
-          - NoTestRun
           - RunSpecifiedTests
           - RunAllTestsInOrg
-
+          - NoTestRun
 
 
 jobs:
 
-  validate-inputs:
+  validate:
 
-    name: Validate Inputs
     runs-on: ubuntu-latest
 
     steps:
 
-      - name: Check SpecificPR inputs
+      - name: Validate PR Input
         if: github.event.inputs.deploymentType == 'SpecificPR'
         run: |
 
           if [ -z "${{ github.event.inputs.prNumber }}" ]
           then
-              echo "PR Number required"
-              exit 1
-          fi
-
-          PR="${{ github.event.inputs.prNumber }}"
-
-          if ! [[ "$PR" =~ ^[0-9]+$ ]]
-          then
-              echo "PR number invalid"
+              echo "PR number required"
               exit 1
           fi
 
 
-      - name: Check SpecificComponent inputs
+      - name: Validate Component
         if: github.event.inputs.deploymentType == 'SpecificComponent'
         run: |
 
           if [ -z "${{ github.event.inputs.componentName }}" ]
           then
-              echo "Component required"
+              echo "Component name required"
               exit 1
           fi
 
 
-      - name: Deployment Summary
-        run: |
-
-          echo "Mode : ${{ github.event.inputs.deploymentType }}"
-          echo "PR : ${{ github.event.inputs.prNumber }}"
-          echo "Component : ${{ github.event.inputs.componentName }}"
-          echo "Environment : ${{ github.event.inputs.targetEnvironment }}"
-          echo "Tests : ${{ github.event.inputs.testLevel }}"
-
-
-
   deploy:
-
-    name: Deploy to ${{ github.event.inputs.targetEnvironment }}
 
     runs-on: ubuntu-latest
 
-    needs: validate-inputs
+    needs: validate
 
     environment:
       name: ${{ github.event.inputs.targetEnvironment }}
 
     steps:
 
-
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
 
-      - name: Install Salesforce CLI
+      - name: Install CLI
         run: |
 
           npm install @salesforce/cli --global
@@ -141,10 +111,9 @@ jobs:
         run: |
 
           yes | sf plugins install sfdx-git-delta
-          sf plugins
 
 
-      - name: Authenticate Target Org
+      - name: Authenticate
         run: |
 
           TARGET="${{ github.event.inputs.targetEnvironment }}"
@@ -161,41 +130,52 @@ jobs:
               echo "${{ secrets.POD3_ENVIRONMENT_SEC }}" > auth.txt
           fi
 
-
           sf org login sfdx-url \
           --sfdx-url-file auth.txt \
           --alias TARGETORG
 
-          rm -f auth.txt
+          rm auth.txt
 
-          sf org list
+          sf org display --target-org TARGETORG
 
 
+      - name: Generate Package
+        if: |
+          github.event.inputs.deploymentType == 'SpecificPR' ||
+          github.event.inputs.deploymentType == 'LatestMergeToMain'
 
-      - name: Generate Package For PR
-        if: github.event.inputs.deploymentType == 'SpecificPR'
         run: |
 
           mkdir -p package
 
-          PR="${{ github.event.inputs.prNumber }}"
+          if [ "${{ github.event.inputs.deploymentType }}" = "SpecificPR" ]
+          then
 
-          git fetch origin pull/${PR}/head:prBranch
+              git fetch origin pull/${{ github.event.inputs.prNumber }}/head:prBranch
 
-          git fetch origin main
+              git fetch origin main
 
-          BASE=$(git merge-base origin/main prBranch)
+              BASE=$(git merge-base origin/main prBranch)
 
-          echo "Base commit:"
-          echo $BASE
+              sf sgd source delta \
+              --from "$BASE" \
+              --to prBranch \
+              --output-dir package \
+              --source-dir force-app
 
-          sf sgd source delta \
-          --from "$BASE" \
-          --to prBranch \
-          --output-dir package \
-          --source-dir force-app
+          else
 
-          ls -R package || true
+              LATEST=$(git log --merges -1 --format="%H")
+
+              PREVIOUS=$(git rev-parse ${LATEST}^1)
+
+              sf sgd source delta \
+              --from "$PREVIOUS" \
+              --to "$LATEST" \
+              --output-dir package \
+              --source-dir force-app
+
+          fi
 
 
           if [ -f package/package/package.xml ]
@@ -208,56 +188,33 @@ jobs:
 
              echo "PKG_PATH=package/package.xml" >> $GITHUB_ENV
 
-          else
-
-             echo "PKG_PATH=" >> $GITHUB_ENV
-
           fi
 
 
 
-      - name: Generate Latest Merge Package
-        if: github.event.inputs.deploymentType == 'LatestMergeToMain'
+      - name: Validate Package
+
+        if: env.PKG_PATH != ''
 
         run: |
 
-          mkdir -p package
+          COMPONENT_COUNT=$(grep -c "<members>" "${{ env.PKG_PATH }}" || true)
 
-          PREV=$(git rev-parse HEAD~1)
-
-          CURR=$(git rev-parse HEAD)
-
-          sf sgd source delta \
-          --from "$PREV" \
-          --to "$CURR" \
-          --output-dir package \
-          --source-dir force-app
-
-          ls -R package || true
-
-
-          if [ -f package/package/package.xml ]
+          if [ "$COMPONENT_COUNT" -eq 0 ]
           then
 
-             echo "PKG_PATH=package/package/package.xml" >> $GITHUB_ENV
+              echo "No metadata found"
 
-          elif [ -f package/package.xml ]
-          then
-
-             echo "PKG_PATH=package/package.xml" >> $GITHUB_ENV
-
-          else
-
-             echo "PKG_PATH=" >> $GITHUB_ENV
+              exit 0
 
           fi
 
 
-
-      - name: Deploy PR Package
+      - name: Deploy Package
 
         if: |
-          github.event.inputs.deploymentType == 'SpecificPR' &&
+          (github.event.inputs.deploymentType == 'SpecificPR' ||
+          github.event.inputs.deploymentType == 'LatestMergeToMain') &&
           env.PKG_PATH != ''
 
         run: |
@@ -269,40 +226,21 @@ jobs:
           --wait 30
 
 
+      - name: Deploy Component
 
-      - name: Deploy Latest Merge Package
-
-        if: |
-          github.event.inputs.deploymentType == 'LatestMergeToMain' &&
-          env.PKG_PATH != ''
-
-        run: |
-
-          sf project deploy start \
-          --manifest "${{ env.PKG_PATH }}" \
-          --target-org TARGETORG \
-          --test-level ${{ github.event.inputs.testLevel }} \
-          --wait 30
-
-
-
-      - name: Deploy Specific Component
         if: github.event.inputs.deploymentType == 'SpecificComponent'
 
         run: |
 
-          TYPE="${{ github.event.inputs.componentType }}"
-          NAME="${{ github.event.inputs.componentName }}"
-
           sf project deploy start \
-          --source-dir force-app/main/default/$TYPE/$NAME \
+          --source-dir force-app/main/default/${{ github.event.inputs.componentType }}/${{ github.event.inputs.componentName }} \
           --target-org TARGETORG \
           --test-level ${{ github.event.inputs.testLevel }} \
           --wait 30
 
 
-
       - name: Full Deploy
+
         if: github.event.inputs.deploymentType == 'FullDeploy'
 
         run: |
@@ -312,16 +250,3 @@ jobs:
           --target-org TARGETORG \
           --test-level ${{ github.event.inputs.testLevel }} \
           --wait 60
-
-
-
-      - name: Final Summary
-        if: always()
-
-        run: |
-
-          echo "================================"
-          echo "Deployment Status : ${{ job.status }}"
-          echo "Deployment Type : ${{ github.event.inputs.deploymentType }}"
-          echo "Target : ${{ github.event.inputs.targetEnvironment }}"
-          echo "================================"
