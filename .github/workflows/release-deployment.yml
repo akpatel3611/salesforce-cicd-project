@@ -52,33 +52,33 @@ jobs:
         run: |
           echo y | sf plugins install sfdx-git-delta
 
-      - name: Authenticate
-        run: |
+            - name: Authenticate
+              run: |
 
-          if [ "${{ github.event.inputs.targetEnvironment }}" = "DEV" ]
-          then
-             echo "${{ secrets.DEV_ENVIRONMENT_SEC }}" > auth.txt
+                if [ "${{ github.event.inputs.targetEnvironment }}" = "DEV" ]
+                then
+               echo "${{ secrets.DEV_ENVIRONMENT_SEC }}" > auth.txt
 
-          elif [ "${{ github.event.inputs.targetEnvironment }}" = "SP" ]
-          then
-             echo "${{ secrets.SP_ENVIRONMENT_SEC }}" > auth.txt
+                elif [ "${{ github.event.inputs.targetEnvironment }}" = "SP" ]
+                then
+               echo "${{ secrets.SP_ENVIRONMENT_SEC }}" > auth.txt
 
-          else
+              else
              echo "${{ secrets.POD3_ENVIRONMENT_SEC }}" > auth.txt
           fi
 
-          sf org login sfdx-url \
-          --sfdx-url-file auth.txt \
-          --alias TARGETORG
+              sf org login sfdx-url \
+              --sfdx-url-file auth.txt \
+              --alias TARGETORG
 
 
-            - name: Generate Package
-              run: |
+      - name: Generate Package
+        run: |
 
-                TYPE="${{ github.event.inputs.deploymentType }}"
+          TYPE="${{ github.event.inputs.deploymentType }}"
 
-                if [ "$TYPE" = "SpecificPR" ]
-                then
+          if [ "$TYPE" = "SpecificPR" ]
+          then
 
               mkdir -p package
 
@@ -94,7 +94,7 @@ jobs:
               find package || true
 
           fi
-
+          
       - name: Deploy
         run: |
 
