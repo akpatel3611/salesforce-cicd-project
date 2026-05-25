@@ -11,4 +11,8 @@ export default class Cicddemo extends LightningElement {
                 console.error('Error executing Apex method: ', error);
             });
     }
+
+    disconnectedCallback() {
+        console.log('cicddemo component unloaded');
+    }
 }
