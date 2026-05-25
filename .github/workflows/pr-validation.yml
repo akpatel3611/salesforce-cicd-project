@@ -32,6 +32,11 @@ jobs:
       - name: Verify Org Connection
         run: sf org list
 
+      - name: Dependency Validation
+        run: |
+          chmod +x scripts/dependency-scan.sh
+          bash scripts/dependency-scan.sh
+
       - name: Validate Deployment
         run: |
           sf project deploy validate \
