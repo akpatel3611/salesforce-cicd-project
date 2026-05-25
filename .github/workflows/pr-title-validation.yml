@@ -1,4 +1,4 @@
-name: feat: add PR title validation workflow
+name: PR Title Validation
 
 on:
   pull_request:
