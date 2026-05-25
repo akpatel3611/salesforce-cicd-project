@@ -2,8 +2,6 @@ import { LightningElement, api, track } from 'lwc';
 
 import {subscribe,unsubscribe,onError } from 'lightning/empApi';
 import { ShowToastEvent } from 'lightning/platformShowToastEvent';
-import getAsyncJobStatus
-from '@salesforce/apex/AsyncOperationController.getAsyncJobStatus';
 export default class Async extends LightningElement {
     @api recordId;
     channelName = '/event/Async_Process_Event__e';
