@@ -10,11 +10,9 @@ on:
         options:
           - SpecificPR
           - LatestMergeToMain
-
       prNumber:
         description: "PR Number (Required if SpecificPR is selected)"
         required: false
-
       targetEnvironment:
         description: "Target Org"
         required: true
@@ -23,7 +21,6 @@ on:
           - DEV
           - SP
           - POD3
-
       testLevel:
         description: "Test Level"
         required: true
@@ -85,24 +82,17 @@ jobs:
 
       - name: Generate Delta Package
         run: |
-          mkdir -p package
+          mkdir -p delta-package
 
           if [ "${{ github.event.inputs.deploymentType }}" = "SpecificPR" ]; then
               git fetch origin pull/${{ github.event.inputs.prNumber }}/head:prBranch
               git fetch origin main
-              
-              # Ensuring exactly the PR's code is present in working directory
               git checkout prBranch
-              
               BASE=$(git merge-base origin/main HEAD)
-              
-              sf sgd source delta --from "$BASE" --to HEAD --output-dir package --source-dir force-app
-              
+              sf sgd source delta --from "$BASE" --to HEAD --output-dir delta-package --source-dir force-app
           else
               git checkout main
               git pull origin main
-              
-              # Safe fallback logic for LatestMerge
               LATEST=$(git log --merges -1 --format="%H" 2>/dev/null || echo "")
               if [ -z "$LATEST" ]; then
                   LATEST=$(git rev-parse HEAD)
@@ -110,38 +100,62 @@ jobs:
               else
                   PREVIOUS=$(git rev-parse ${LATEST}^1)
               fi
-              
-              sf sgd source delta --from "$PREVIOUS" --to "$LATEST" --output-dir package --source-dir force-app
+              sf sgd source delta --from "$PREVIOUS" --to "$LATEST" --output-dir delta-package --source-dir force-app
+          fi
+
+      - name: Preview Components to Deploy (Kon se component deploy honge?)
+        run: |
+          echo "=== DEPLOYMENT PREVIEW ==="
+          if [ -f "delta-package/package.xml" ]; then
+              echo "📄 New / Modified Components List:"
+              cat delta-package/package.xml
+          elif [ -f "delta-package/package/package.xml" ]; then
+              echo "📄 New / Modified Components List:"
+              cat delta-package/package/package.xml
+          else
+              echo "⚠️ No package.xml found."
+          fi
+
+          if [ -f "delta-package/destructiveChanges/destructiveChanges.xml" ]; then
+              echo "🗑️ Deleted Components (Destructive Changes) List:"
+              cat delta-package/destructiveChanges/destructiveChanges.xml
+          elif [ -f "delta-package/destructiveChanges.xml" ]; then
+              echo "🗑️ Deleted Components (Destructive Changes) List:"
+              cat delta-package/destructiveChanges.xml
+          else
+              echo "⚠️ No destructive changes found."
           fi
 
       - name: Deploy Delta Package
         run: |
-          # Base deploy command with --ignore-conflicts to bypass sandbox tracking issues
+          # Dynamic parameters fetched from user choices
           DEPLOY_CMD="sf project deploy start --target-org TARGETORG --test-level ${{ github.event.inputs.testLevel }} --wait 30 --ignore-conflicts"
-          
           HAS_CHANGES=false
 
-          # Determine exact path of generated package.xml
+          # Correct path detection for SGD output structure
           PKG_XML_PATH=""
-          if [ -f "package/package/package.xml" ]; then
-              PKG_XML_PATH="package/package/package.xml"
-          elif [ -f "package/package.xml" ]; then
-              PKG_XML_PATH="package/package.xml"
+          if [ -f "delta-package/package/package.xml" ]; then
+              PKG_XML_PATH="delta-package/package/package.xml"
+              SRC_DIR="delta-package/force-app"
+          elif [ -f "delta-package/package.xml" ]; then
+              PKG_XML_PATH="delta-package/package.xml"
+              SRC_DIR="delta-package/force-app"
           fi
 
-          # 1. Check if there are added/modified files
+          # 1. Check & append added/modified components
           if [ -n "$PKG_XML_PATH" ] && grep -q "<members>" "$PKG_XML_PATH"; then
               echo "✅ Found added/modified files in Delta."
-              DEPLOY_CMD="$DEPLOY_CMD --source-dir package/force-app"
+              # Deploying through manifest is safer for dynamic delta folders
+              DEPLOY_CMD="$DEPLOY_CMD --manifest $PKG_XML_PATH"
               HAS_CHANGES=true
           fi
 
-          # 2. Check if there are deleted files (destructive changes)
+          # 2. Check & append deleted files
           DEST_XML_PATH=""
-          if [ -f "package/destructiveChanges/destructiveChanges.xml" ]; then
-              DEST_XML_PATH="package/destructiveChanges/destructiveChanges.xml"
-          elif [ -f "package/destructiveChanges.xml" ]; then
-              DEST_XML_PATH="package/destructiveChanges.xml"
+          if [ -f "delta-package/destructiveChanges/destructiveChanges.xml" ]; then
+              DEST_XML_PATH="delta-package/destructiveChanges/destructiveChanges.xml"
+          elif [ -f "delta-package/destructiveChanges.xml" ]; then
+              DEST_XML_PATH="delta-package/destructiveChanges.xml"
           fi
 
           if [ -n "$DEST_XML_PATH" ] && grep -q "<members>" "$DEST_XML_PATH"; then
@@ -150,7 +164,7 @@ jobs:
               HAS_CHANGES=true
           fi
 
-          # 3. If no changes exist, exit gracefully without failing pipeline
+          # 3. Handle empty check
           if [ "$HAS_CHANGES" = false ]; then
               echo "🚀 No metadata changes found to deploy. Pipeline exiting successfully."
               exit 0
@@ -159,5 +173,4 @@ jobs:
           echo "Executing Deployment Command:"
           echo "$DEPLOY_CMD"
           
-          # Run the dynamically built command
           eval $DEPLOY_CMD
