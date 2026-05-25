@@ -40,7 +40,7 @@ jobs:
         run: |
           if [ -z "${{ github.event.inputs.prNumber }}" ]
           then
-              echo "PR number required"
+              echo "❌ Error: PR number is mandatory when SpecificPR is chosen."
               exit 1
           fi
 
@@ -50,12 +50,12 @@ jobs:
     environment:
       name: ${{ github.event.inputs.targetEnvironment }}
     steps:
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install CLI
+      - name: Install Salesforce CLI
         run: |
           npm install @salesforce/cli --global
           sf --version
@@ -80,77 +80,65 @@ jobs:
           rm auth.txt
           sf org display --target-org TARGETORG
 
-      - name: Generate Delta Package
+      - name: Process and Generate Delta Package
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p delta-package
-
+          
+          # 1. SPECIFIC PR SELECTION MODE
           if [ "${{ github.event.inputs.deploymentType }}" = "SpecificPR" ]; then
-              git fetch origin pull/${{ github.event.inputs.prNumber }}/head:prBranch
-              git fetch origin main
-              git checkout prBranch
-              BASE=$(git merge-base origin/main HEAD)
-              sf sgd source delta --from "$BASE" --to HEAD --output-dir delta-package --source-dir force-app
+              PR_NUM="${{ github.event.inputs.prNumber }}"
+              echo "🔄 Fetching direct details for PR #${PR_NUM} from GitHub API..."
+              
+              # Pull Request ki target aur source branches ko check out karne ka jhanjhat khatam
+              # Direct API se Diff Base Hash fetch karna sabse secure tareeka hai
+              BASE_SHA=$(gh pr view $PR_NUM --json baseRefOid --template '{{.baseRefOid}}')
+              HEAD_SHA=$(gh pr view $PR_NUM --json headRefOid --template '{{.headRefOid}}')
+              
+              echo "PR Base Commit: $BASE_SHA | PR Head Commit: $HEAD_SHA"
+              sf sgd source delta --from "$BASE_SHA" --to "$HEAD_SHA" --output-dir delta-package --source-dir force-app
+          
+          # 2. LATEST MERGE SELECTION MODE 
           else
-              git checkout main
-              git pull origin main
-              LATEST=$(git log --merges -1 --format="%H" 2>/dev/null || echo "")
-              if [ -z "$LATEST" ]; then
-                  LATEST=$(git rev-parse HEAD)
-                  PREVIOUS=$(git rev-parse HEAD~1)
+              echo "🔄 Scanning across repository for the latest merged PR components..."
+              
+              # Repo me merged hui sabse aakhri Pull Request ka Number nikalna automatically
+              LATEST_MERGED_PR=$(gh pr list --state merged --limit 1 --json number --template '{{range .}}{{.number}}{{end}}')
+              
+              if [ -z "$LATEST_MERGED_PR" ]; then
+                  echo "⚠️ No merged Pull Requests found in the repository history. Falling back to last commit diff."
+                  sf sgd source delta --from "HEAD~1" --to "HEAD" --output-dir delta-package --source-dir force-app
               else
-                  PREVIOUS=$(git rev-parse ${LATEST}^1)
+                  echo "🎯 Found Latest Merged PR Number: #${LATEST_MERGED_PR}"
+                  BASE_SHA=$(gh pr view $LATEST_MERGED_PR --json baseRefOid --template '{{.baseRefOid}}')
+                  HEAD_SHA=$(gh pr view $LATEST_MERGED_PR --json headRefOid --template '{{.headRefOid}}')
+                  
+                  echo "Comparing changes between $BASE_SHA and $HEAD_SHA"
+                  sf sgd source delta --from "$BASE_SHA" --to "$HEAD_SHA" --output-dir delta-package --source-dir force-app
               fi
-              sf sgd source delta --from "$PREVIOUS" --to "$LATEST" --output-dir delta-package --source-dir force-app
           fi
 
       - name: Preview Components to Deploy (Kon se component deploy honge?)
         run: |
-          echo "=== DEPLOYMENT PREVIEW ==="
-          if [ -f "delta-package/package.xml" ]; then
-              echo "📄 New / Modified Components List:"
-              cat delta-package/package.xml
-          elif [ -f "delta-package/package/package.xml" ]; then
-              echo "📄 New / Modified Components List:"
-              cat delta-package/package/package.xml
-          else
-              echo "⚠️ No package.xml found."
-          fi
-
-          if [ -f "delta-package/destructiveChanges/destructiveChanges.xml" ]; then
-              echo "🗑️ Deleted Components (Destructive Changes) List:"
-              cat delta-package/destructiveChanges/destructiveChanges.xml
-          elif [ -f "delta-package/destructiveChanges.xml" ]; then
-              echo "🗑️ Deleted Components (Destructive Changes) List:"
-              cat delta-package/destructiveChanges.xml
-          else
-              echo "⚠️ No destructive changes found."
-          fi
-
-      - name: Deploy Delta Package
-        run: |
-          # Dynamic parameters fetched from user choices
-          DEPLOY_CMD="sf project deploy start --target-org TARGETORG --test-level ${{ github.event.inputs.testLevel }} --wait 30 --ignore-conflicts"
-          HAS_CHANGES=false
-
-          # Correct path detection for SGD output structure
+          echo "========================================="
+          echo "🔍 LIVE DEPLOYMENT PREVIEW ANALYSIS"
+          echo "========================================="
+          
           PKG_XML_PATH=""
           if [ -f "delta-package/package/package.xml" ]; then
               PKG_XML_PATH="delta-package/package/package.xml"
-              SRC_DIR="delta-package/force-app"
           elif [ -f "delta-package/package.xml" ]; then
               PKG_XML_PATH="delta-package/package.xml"
-              SRC_DIR="delta-package/force-app"
           fi
 
-          # 1. Check & append added/modified components
           if [ -n "$PKG_XML_PATH" ] && grep -q "<members>" "$PKG_XML_PATH"; then
-              echo "✅ Found added/modified files in Delta."
-              # Deploying through manifest is safer for dynamic delta folders
-              DEPLOY_CMD="$DEPLOY_CMD --manifest $PKG_XML_PATH"
-              HAS_CHANGES=true
+              echo "📄 New / Modified Components List:"
+              cat "$PKG_XML_PATH"
+          else
+              echo "⚠️ No new or modified components identified."
           fi
 
-          # 2. Check & append deleted files
           DEST_XML_PATH=""
           if [ -f "delta-package/destructiveChanges/destructiveChanges.xml" ]; then
               DEST_XML_PATH="delta-package/destructiveChanges/destructiveChanges.xml"
@@ -159,18 +147,48 @@ jobs:
           fi
 
           if [ -n "$DEST_XML_PATH" ] && grep -q "<members>" "$DEST_XML_PATH"; then
-              echo "✅ Found deleted files (destructive changes)."
+              echo "🗑️ Deleted Components (Destructive Changes) List:"
+              cat "$DEST_XML_PATH"
+          else
+              echo "⚠️ No destructive changes found."
+          fi
+          echo "========================================="
+
+      - name: Deploy Delta Package to Target Org
+        run: |
+          DEPLOY_CMD="sf project deploy start --target-org TARGETORG --test-level ${{ github.event.inputs.testLevel }} --wait 30 --ignore-conflicts"
+          HAS_CHANGES=false
+
+          PKG_XML_PATH=""
+          if [ -f "delta-package/package/package.xml" ]; then
+              PKG_XML_PATH="delta-package/package/package.xml"
+          elif [ -f "delta-package/package.xml" ]; then
+              PKG_XML_PATH="delta-package/package.xml"
+          fi
+
+          if [ -n "$PKG_XML_PATH" ] && grep -q "<members>" "$PKG_XML_PATH"; then
+              DEPLOY_CMD="$DEPLOY_CMD --manifest $PKG_XML_PATH"
+              HAS_CHANGES=true
+          fi
+
+          DEST_XML_PATH=""
+          if [ -f "delta-package/destructiveChanges/destructiveChanges.xml" ]; then
+              DEST_XML_PATH="delta-package/destructiveChanges/destructiveChanges.xml"
+          elif [ -f "delta-package/destructiveChanges.xml" ]; then
+              DEST_XML_PATH="delta-package/destructiveChanges.xml"
+          fi
+
+          if [ -n "$DEST_XML_PATH" ] && grep -q "<members>" "$DEST_XML_PATH"; then
               DEPLOY_CMD="$DEPLOY_CMD --post-destructive-changes $DEST_XML_PATH"
               HAS_CHANGES=true
           fi
 
-          # 3. Handle empty check
           if [ "$HAS_CHANGES" = false ]; then
-              echo "🚀 No metadata changes found to deploy. Pipeline exiting successfully."
+              echo "No changes found to deploy. Pipeline exiting successfully."
               exit 0
           fi
 
-          echo "Executing Deployment Command:"
+          echo "Executing Dynamic Deployment Command Structure:"
           echo "$DEPLOY_CMD"
           
           eval $DEPLOY_CMD
