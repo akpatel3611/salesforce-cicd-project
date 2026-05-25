@@ -3,6 +3,7 @@ name: Salesforce Smart Deployment
 on:
   workflow_dispatch:
     inputs:
+
       deploymentType:
         description: "Deployment Type"
         required: true
@@ -10,9 +11,11 @@ on:
         options:
           - SpecificPR
           - LatestMergeToMain
+
       prNumber:
-        description: "PR Number (Required if SpecificPR is selected)"
+        description: "PR Number"
         required: false
+
       targetEnvironment:
         description: "Target Org"
         required: true
@@ -21,6 +24,7 @@ on:
           - DEV
           - SP
           - POD3
+
       testLevel:
         description: "Test Level"
         required: true
@@ -31,164 +35,175 @@ on:
           - RunAllTestsInOrg
           - NoTestRun
 
+
+permissions:
+  contents: read
+  pull-requests: read
+
+
 jobs:
+
   validate:
+
     runs-on: ubuntu-latest
+
     steps:
-      - name: Validate PR Input
+
+      - name: Validate PR
         if: github.event.inputs.deploymentType == 'SpecificPR'
+
         run: |
+
           if [ -z "${{ github.event.inputs.prNumber }}" ]
           then
-              echo "❌ Error: PR number is mandatory when SpecificPR is chosen."
+
+              echo "PR number required"
+
               exit 1
+
           fi
 
+
   deploy:
+
     runs-on: ubuntu-latest
+
     needs: validate
+
     environment:
       name: ${{ github.event.inputs.targetEnvironment }}
+
     steps:
-      - name: Checkout Repository
+
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install Salesforce CLI
+
+      - name: Install CLI + GitHub CLI
         run: |
+
           npm install @salesforce/cli --global
+
+          sudo apt-get update
+
+          sudo apt-get install gh -y
+
           sf --version
+          gh --version
+
 
       - name: Install Delta Plugin
         run: |
+
           yes | sf plugins install sfdx-git-delta
 
-      - name: Authenticate Target Org
+
+      - name: Authenticate
+
         run: |
+
           TARGET="${{ github.event.inputs.targetEnvironment }}"
 
-          if [ "$TARGET" = "DEV" ]; then
-              echo "${{ secrets.DEV_ENVIRONMENT_SEC }}" > auth.txt
-          elif [ "$TARGET" = "SP" ]; then
-              echo "${{ secrets.SP_ENVIRONMENT_SEC }}" > auth.txt
+          if [ "$TARGET" = "DEV" ]
+          then
+             echo "${{ secrets.DEV_ENVIRONMENT_SEC }}" > auth.txt
+
+          elif [ "$TARGET" = "SP" ]
+          then
+             echo "${{ secrets.SP_ENVIRONMENT_SEC }}" > auth.txt
+
           else
-              echo "${{ secrets.POD3_ENVIRONMENT_SEC }}" > auth.txt
+             echo "${{ secrets.POD3_ENVIRONMENT_SEC }}" > auth.txt
           fi
 
-          sf org login sfdx-url --sfdx-url-file auth.txt --alias TARGETORG
-          rm auth.txt
-          sf org display --target-org TARGETORG
+          sf org login sfdx-url \
+          --sfdx-url-file auth.txt \
+          --alias TARGETORG
 
-      - name: Process and Generate Delta Package
+          rm auth.txt
+
+
+      - name: Generate Delta
+
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
         run: |
+
           mkdir -p delta-package
-          
-          # 1. SPECIFIC PR SELECTION MODE
-          if [ "${{ github.event.inputs.deploymentType }}" = "SpecificPR" ]; then
-              PR_NUM="${{ github.event.inputs.prNumber }}"
-              echo "🔄 Fetching direct details for PR #${PR_NUM} from GitHub API..."
-              
-              # Pull Request ki target aur source branches ko check out karne ka jhanjhat khatam
-              # Direct API se Diff Base Hash fetch karna sabse secure tareeka hai
-              BASE_SHA=$(gh pr view $PR_NUM --json baseRefOid --template '{{.baseRefOid}}')
-              HEAD_SHA=$(gh pr view $PR_NUM --json headRefOid --template '{{.headRefOid}}')
-              
-              echo "PR Base Commit: $BASE_SHA | PR Head Commit: $HEAD_SHA"
-              sf sgd source delta --from "$BASE_SHA" --to "$HEAD_SHA" --output-dir delta-package --source-dir force-app
-          
-          # 2. LATEST MERGE SELECTION MODE 
+
+          if [ "${{ github.event.inputs.deploymentType }}" = "SpecificPR" ]
+          then
+
+              PR="${{ github.event.inputs.prNumber }}"
+
+              BASE=$(gh pr view $PR --json baseRefOid --jq '.baseRefOid')
+
+              HEAD=$(gh pr view $PR --json headRefOid --jq '.headRefOid')
+
           else
-              echo "🔄 Scanning across repository for the latest merged PR components..."
-              
-              # Repo me merged hui sabse aakhri Pull Request ka Number nikalna automatically
-              LATEST_MERGED_PR=$(gh pr list --state merged --limit 1 --json number --template '{{range .}}{{.number}}{{end}}')
-              
-              if [ -z "$LATEST_MERGED_PR" ]; then
-                  echo "⚠️ No merged Pull Requests found in the repository history. Falling back to last commit diff."
-                  sf sgd source delta --from "HEAD~1" --to "HEAD" --output-dir delta-package --source-dir force-app
-              else
-                  echo "🎯 Found Latest Merged PR Number: #${LATEST_MERGED_PR}"
-                  BASE_SHA=$(gh pr view $LATEST_MERGED_PR --json baseRefOid --template '{{.baseRefOid}}')
-                  HEAD_SHA=$(gh pr view $LATEST_MERGED_PR --json headRefOid --template '{{.headRefOid}}')
-                  
-                  echo "Comparing changes between $BASE_SHA and $HEAD_SHA"
-                  sf sgd source delta --from "$BASE_SHA" --to "$HEAD_SHA" --output-dir delta-package --source-dir force-app
-              fi
+
+              PR=$(gh pr list \
+              --state merged \
+              --limit 1 \
+              --json number \
+              --jq '.[0].number')
+
+              BASE=$(gh pr view $PR --json baseRefOid --jq '.baseRefOid')
+
+              HEAD=$(gh pr view $PR --json headRefOid --jq '.headRefOid')
+
           fi
 
-      - name: Preview Components to Deploy (Kon se component deploy honge?)
+
+          sf sgd source delta \
+          --from "$BASE" \
+          --to "$HEAD" \
+          --output-dir delta-package \
+          --source-dir force-app
+
+
+      - name: Preview
+
         run: |
-          echo "========================================="
-          echo "🔍 LIVE DEPLOYMENT PREVIEW ANALYSIS"
-          echo "========================================="
-          
-          PKG_XML_PATH=""
-          if [ -f "delta-package/package/package.xml" ]; then
-              PKG_XML_PATH="delta-package/package/package.xml"
-          elif [ -f "delta-package/package.xml" ]; then
-              PKG_XML_PATH="delta-package/package.xml"
-          fi
 
-          if [ -n "$PKG_XML_PATH" ] && grep -q "<members>" "$PKG_XML_PATH"; then
-              echo "📄 New / Modified Components List:"
-              cat "$PKG_XML_PATH"
-          else
-              echo "⚠️ No new or modified components identified."
-          fi
+          find delta-package || true
 
-          DEST_XML_PATH=""
-          if [ -f "delta-package/destructiveChanges/destructiveChanges.xml" ]; then
-              DEST_XML_PATH="delta-package/destructiveChanges/destructiveChanges.xml"
-          elif [ -f "delta-package/destructiveChanges.xml" ]; then
-              DEST_XML_PATH="delta-package/destructiveChanges.xml"
-          fi
 
-          if [ -n "$DEST_XML_PATH" ] && grep -q "<members>" "$DEST_XML_PATH"; then
-              echo "🗑️ Deleted Components (Destructive Changes) List:"
-              cat "$DEST_XML_PATH"
-          else
-              echo "⚠️ No destructive changes found."
-          fi
-          echo "========================================="
+      - name: Deploy
 
-      - name: Deploy Delta Package to Target Org
         run: |
-          DEPLOY_CMD="sf project deploy start --target-org TARGETORG --test-level ${{ github.event.inputs.testLevel }} --wait 30 --ignore-conflicts"
-          HAS_CHANGES=false
 
-          PKG_XML_PATH=""
-          if [ -f "delta-package/package/package.xml" ]; then
-              PKG_XML_PATH="delta-package/package/package.xml"
-          elif [ -f "delta-package/package.xml" ]; then
-              PKG_XML_PATH="delta-package/package.xml"
-          fi
+          if [ ! -d "delta-package/force-app" ]
+          then
 
-          if [ -n "$PKG_XML_PATH" ] && grep -q "<members>" "$PKG_XML_PATH"; then
-              DEPLOY_CMD="$DEPLOY_CMD --manifest $PKG_XML_PATH"
-              HAS_CHANGES=true
-          fi
+              echo "No deployable files"
 
-          DEST_XML_PATH=""
-          if [ -f "delta-package/destructiveChanges/destructiveChanges.xml" ]; then
-              DEST_XML_PATH="delta-package/destructiveChanges/destructiveChanges.xml"
-          elif [ -f "delta-package/destructiveChanges.xml" ]; then
-              DEST_XML_PATH="delta-package/destructiveChanges.xml"
-          fi
-
-          if [ -n "$DEST_XML_PATH" ] && grep -q "<members>" "$DEST_XML_PATH"; then
-              DEPLOY_CMD="$DEPLOY_CMD --post-destructive-changes $DEST_XML_PATH"
-              HAS_CHANGES=true
-          fi
-
-          if [ "$HAS_CHANGES" = false ]; then
-              echo "No changes found to deploy. Pipeline exiting successfully."
               exit 0
+
           fi
 
-          echo "Executing Dynamic Deployment Command Structure:"
-          echo "$DEPLOY_CMD"
-          
-          eval $DEPLOY_CMD
+
+          FILES=$(find delta-package/force-app -type f | wc -l)
+
+          echo "Detected files:$FILES"
+
+
+          if [ "$FILES" -eq 0 ]
+          then
+
+              echo "No metadata found"
+
+              exit 0
+
+          fi
+
+
+          sf project deploy start \
+          --source-dir delta-package/force-app \
+          --target-org TARGETORG \
+          --test-level ${{ github.event.inputs.testLevel }} \
+          --ignore-conflicts \
+          --wait 30
