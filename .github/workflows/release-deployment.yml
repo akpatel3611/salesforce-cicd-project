@@ -162,7 +162,8 @@ jobs:
           --from "$BASE" \
           --to "$HEAD" \
           --output-dir delta-package \
-          --source-dir force-app
+          --source-dir force-app \
+          --generate-delta
 
 
       - name: Preview
