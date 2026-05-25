@@ -4,7 +4,13 @@ echo "Starting dependency validation"
 
 FAILED=false
 
-git diff --name-only origin/develop...HEAD > changedFiles.txt
+TARGET_BRANCH="${GITHUB_BASE_REF}"
+
+echo "Target branch: $TARGET_BRANCH"
+
+git fetch origin $TARGET_BRANCH
+
+git diff --name-only origin/$TARGET_BRANCH...HEAD > changedFiles.txt
 
 
 while read FILE
@@ -50,10 +56,10 @@ fi
 
 done < imports.txt
 
-
 fi
 
 done < changedFiles.txt
+
 
 
 if [ "$FAILED" = true ]
@@ -66,4 +72,4 @@ exit 1
 fi
 
 
-echo "Dependency validation successful"
+echo "Dependency validation passed"
