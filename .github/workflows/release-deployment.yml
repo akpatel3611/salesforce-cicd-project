@@ -9,27 +9,10 @@ on:
         type: choice
         options:
           - SpecificPR
-          - SpecificComponent
           - LatestMergeToMain
-          - FullDeploy
 
       prNumber:
-        description: "PR Number"
-        required: false
-
-      componentType:
-        description: "Component Type"
-        required: false
-        type: choice
-        options:
-          - lwc
-          - classes
-          - triggers
-          - flows
-          - objects
-
-      componentName:
-        description: "Component Name"
+        description: "PR Number (Required if SpecificPR is selected)"
         required: false
 
       targetEnvironment:
@@ -61,15 +44,6 @@ jobs:
           if [ -z "${{ github.event.inputs.prNumber }}" ]
           then
               echo "PR number required"
-              exit 1
-          fi
-
-      - name: Validate Component
-        if: github.event.inputs.deploymentType == 'SpecificComponent'
-        run: |
-          if [ -z "${{ github.event.inputs.componentName }}" ]
-          then
-              echo "Component name required"
               exit 1
           fi
 
@@ -110,9 +84,6 @@ jobs:
           sf org display --target-org TARGETORG
 
       - name: Generate Delta Package
-        if: |
-          github.event.inputs.deploymentType == 'SpecificPR' ||
-          github.event.inputs.deploymentType == 'LatestMergeToMain'
         run: |
           mkdir -p package
 
@@ -143,28 +114,39 @@ jobs:
               sf sgd source delta --from "$PREVIOUS" --to "$LATEST" --output-dir package --source-dir force-app
           fi
 
-      - name: Deploy Delta Package (PR or LatestMerge)
-        if: |
-          github.event.inputs.deploymentType == 'SpecificPR' ||
-          github.event.inputs.deploymentType == 'LatestMergeToMain'
+      - name: Deploy Delta Package
         run: |
           # Base deploy command with --ignore-conflicts to bypass sandbox tracking issues
           DEPLOY_CMD="sf project deploy start --target-org TARGETORG --test-level ${{ github.event.inputs.testLevel }} --wait 30 --ignore-conflicts"
           
           HAS_CHANGES=false
 
+          # Determine exact path of generated package.xml
+          PKG_XML_PATH=""
+          if [ -f "package/package/package.xml" ]; then
+              PKG_XML_PATH="package/package/package.xml"
+          elif [ -f "package/package.xml" ]; then
+              PKG_XML_PATH="package/package.xml"
+          fi
+
           # 1. Check if there are added/modified files
-          if [ -f "package/package/package.xml" ] && grep -q "<members>" "package/package/package.xml"; then
+          if [ -n "$PKG_XML_PATH" ] && grep -q "<members>" "$PKG_XML_PATH"; then
               echo "✅ Found added/modified files in Delta."
-              # FIX: Deploying the isolated folder directly instead of using manifest
               DEPLOY_CMD="$DEPLOY_CMD --source-dir package/force-app"
               HAS_CHANGES=true
           fi
 
           # 2. Check if there are deleted files (destructive changes)
-          if [ -f "package/destructiveChanges/destructiveChanges.xml" ] && grep -q "<members>" "package/destructiveChanges/destructiveChanges.xml"; then
+          DEST_XML_PATH=""
+          if [ -f "package/destructiveChanges/destructiveChanges.xml" ]; then
+              DEST_XML_PATH="package/destructiveChanges/destructiveChanges.xml"
+          elif [ -f "package/destructiveChanges.xml" ]; then
+              DEST_XML_PATH="package/destructiveChanges.xml"
+          fi
+
+          if [ -n "$DEST_XML_PATH" ] && grep -q "<members>" "$DEST_XML_PATH"; then
               echo "✅ Found deleted files (destructive changes)."
-              DEPLOY_CMD="$DEPLOY_CMD --post-destructive-changes package/destructiveChanges/destructiveChanges.xml"
+              DEPLOY_CMD="$DEPLOY_CMD --post-destructive-changes $DEST_XML_PATH"
               HAS_CHANGES=true
           fi
 
@@ -179,21 +161,3 @@ jobs:
           
           # Run the dynamically built command
           eval $DEPLOY_CMD
-
-      - name: Deploy Specific Component
-        if: github.event.inputs.deploymentType == 'SpecificComponent'
-        run: |
-          sf project deploy start \
-          --source-dir force-app/main/default/${{ github.event.inputs.componentType }}/${{ github.event.inputs.componentName }} \
-          --target-org TARGETORG \
-          --test-level ${{ github.event.inputs.testLevel }} \
-          --wait 30 --ignore-conflicts
-
-      - name: Full Deploy
-        if: github.event.inputs.deploymentType == 'FullDeploy'
-        run: |
-          sf project deploy start \
-          --source-dir force-app \
-          --target-org TARGETORG \
-          --test-level ${{ github.event.inputs.testLevel }} \
-          --wait 60 --ignore-conflicts
