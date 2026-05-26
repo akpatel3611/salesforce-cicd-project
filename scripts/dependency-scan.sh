@@ -10,24 +10,22 @@ TARGET_BRANCH="${GITHUB_BASE_REF}"
 
 if [ -z "$TARGET_BRANCH" ]
 then
-
 echo "GitHub branch not found"
-
 echo "Using develop as local target branch"
-
 TARGET_BRANCH="develop"
-
 fi
 
 echo "Target Branch:$TARGET_BRANCH"
 
 git fetch origin $TARGET_BRANCH
 
-git diff --name-only origin/$TARGET_BRANCH...HEAD > changedFiles.txt
+git diff --name-only origin/$TARGET_BRANCH HEAD > changedFiles.txt
 
 git diff --name-only >> changedFiles.txt
 
 sort -u changedFiles.txt -o changedFiles.txt
+
+
 
 cat changedFiles.txt
 
@@ -38,7 +36,6 @@ echo "Checking file: $FILE"
 
 if [[ "$FILE" == *".js" ]]
 then
-
 grep "@salesforce/apex" "$FILE" > imports.txt || true
 
 while read LINE
