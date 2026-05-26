@@ -8,11 +8,24 @@ FAILED=false
 
 TARGET_BRANCH="${GITHUB_BASE_REF}"
 
-echo "Target Branch: $TARGET_BRANCH"
+if [ -z "$TARGET_BRANCH" ]
+then
+
+echo "GitHub branch not found"
+
+TARGET_BRANCH="develop"
+
+fi
+
+echo "Target Branch:$TARGET_BRANCH"
 
 git fetch origin $TARGET_BRANCH
 
-git diff --name-only origin/$TARGET_BRANCH...HEAD > changedFiles.txt
+git diff --name-only origin/$TARGET_BRANCH HEAD > changedFiles.txt
+
+git diff --name-only >> changedFiles.txt
+
+sort -u changedFiles.txt -o changedFiles.txt
 
 cat changedFiles.txt
 

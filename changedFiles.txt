@@ -1,0 +1,4 @@
+.github/workflows/pr-validation.yml
+force-app/main/default/lwc/accountViewer/accountViewer.js
+manual-components.txt
+scripts/dependency-scan.sh
