@@ -36,7 +36,6 @@ echo "Checking file: $FILE"
 
 if [[ "$FILE" == *".js" ]]
 then
-
 grep "@salesforce/apex" "$FILE" > imports.txt || true
 
 while read LINE
