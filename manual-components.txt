@@ -1,0 +1,3 @@
+#manual component path
+#force-app/main/default/classes/Example.cls
+#force-app/main/default/classes/ExampleTest.cls
