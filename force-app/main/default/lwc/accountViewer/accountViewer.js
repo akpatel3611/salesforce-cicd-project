@@ -1,3 +1,3 @@
 import { LightningElement } from 'lwc';
-import getData from '@salesforce/apex/AsyncOperationController.getAllOperations';
+import getRecentOperations from '@salesforce/apex/AsyncOperationController.getRecentOperations';
 export default class AccountViewer extends LightningElement {}
