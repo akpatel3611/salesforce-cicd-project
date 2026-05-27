@@ -1,10 +1,13 @@
 import { LightningElement } from 'lwc';
-import getRecentOperations from '@salesforce/apex/AsyncOperationController.getRecentOperations';
 
 export default class AccountViewer extends LightningElement {
 
     connectedCallback() {
-        console.log('dependency test');
+
+        console.log(
+            'AccountViewer component has been connected to the DOM'
+        );
+
     }
 
 }
