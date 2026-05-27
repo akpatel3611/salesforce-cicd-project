@@ -10,9 +10,11 @@ on:
         options:
           - SpecificPR
           - LatestMergeToMain
+
       prNumber:
         description: "PR Number"
         required: false
+
       targetEnvironment:
         description: "Target Org"
         required: true
@@ -21,6 +23,7 @@ on:
           - DEV
           - SP
           - POD3
+
       testLevel:
         description: "Test Level"
         required: true
@@ -36,89 +39,114 @@ permissions:
   pull-requests: read
 
 jobs:
+
   validate:
     runs-on: ubuntu-latest
+
     steps:
       - name: Validate PR Input Parameters
         if: github.event.inputs.deploymentType == 'SpecificPR'
         run: |
+
           if [ -z "${{ github.event.inputs.prNumber }}" ]
           then
-              echo "ERROR: PR number is mandatory when 'SpecificPR' deployment type is selected."
+              echo "ERROR : PR Number required"
               exit 1
           fi
 
   deploy:
+
     runs-on: ubuntu-latest
     needs: validate
+
     environment:
       name: ${{ github.event.inputs.targetEnvironment }}
+
     steps:
-      - name: Checkout Repository Source Code
+
+      - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Install Salesforce CLI and GitHub CLI
+      - name: Install Salesforce CLI
         run: |
+
           npm install @salesforce/cli --global
+
           sudo apt-get update
           sudo apt-get install gh -y
+
           sf --version
           gh --version
 
-      - name: Install Salesforce Git Delta Plugin
+      - name: Install Git Delta Plugin
         run: |
+
           yes | sf plugins install sfdx-git-delta
 
-      - name: Authenticate Target Salesforce Org
+      - name: Authenticate Org
         run: |
+
           TARGET="${{ github.event.inputs.targetEnvironment }}"
 
           if [ "$TARGET" = "DEV" ]
           then
-             echo "${{ secrets.DEV_ENVIRONMENT_SEC }}" > auth.txt
+            echo "${{ secrets.DEV_ENVIRONMENT_SEC }}" > auth.txt
+
           elif [ "$TARGET" = "SP" ]
           then
-             echo "${{ secrets.SP_ENVIRONMENT_SEC }}" > auth.txt
+            echo "${{ secrets.SP_ENVIRONMENT_SEC }}" > auth.txt
+
           else
-             echo "${{ secrets.POD3_ENVIRONMENT_SEC }}" > auth.txt
+            echo "${{ secrets.POD3_ENVIRONMENT_SEC }}" > auth.txt
           fi
 
-          sf org login sfdx-url --sfdx-url-file auth.txt --alias TARGETORG
+          sf org login sfdx-url \
+          --sfdx-url-file auth.txt \
+          --alias TARGETORG
+
           rm auth.txt
+
           sf org display --target-org TARGETORG
 
-      - name: Dynamically Generate Delta Package Manifests
+      - name: Generate Delta Package
+
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
         run: |
+
           mkdir -p delta-package
 
           if [ "${{ github.event.inputs.deploymentType }}" = "SpecificPR" ]
           then
+
               PR="${{ github.event.inputs.prNumber }}"
-              echo "Processing Specific PR Deployment for PR: #${PR}"
+
+              echo "Processing PR : $PR"
+
               BASE=$(gh pr view $PR --json baseRefOid --jq '.baseRefOid')
               HEAD=$(gh pr view $PR --json headRefOid --jq '.headRefOid')
+
           else
-              echo "Scanning Repository for the Latest Merged Pull Request..."
-              PR=$(gh pr list --state merged --limit 1 --json number --jq '.[0].number')
-              
-              if [ -z "$PR" ] || [ "$PR" = "null" ]; then
-                  echo "Notice: No merged PR found in repository. Falling back to last commit tracking."
-                  BASE="HEAD~1"
-                  HEAD="HEAD"
-              else
-                  echo "Identified Latest Merged PR Number: #${PR}"
-                  BASE=$(gh pr view $PR --json baseRefOid --jq '.baseRefOid')
-                  HEAD=$(gh pr view $PR --json headRefOid --jq '.headRefOid')
-              fi
+
+              echo "Finding latest merged PR"
+
+              PR=$(gh pr list \
+              --state merged \
+              --limit 1 \
+              --json number \
+              --jq '.[0].number')
+
+              BASE=$(gh pr view $PR --json baseRefOid --jq '.baseRefOid')
+              HEAD=$(gh pr view $PR --json headRefOid --jq '.headRefOid')
+
           fi
 
-          echo "Comparing Diff from Base Commit: $BASE to Head Commit: $HEAD"
-          
-          # Generating structured delta outputs using package manifests
+          echo "Base : $BASE"
+          echo "Head : $HEAD"
+
           sf sgd source delta \
           --from "$BASE" \
           --to "$HEAD" \
@@ -126,68 +154,134 @@ jobs:
           --source-dir force-app \
           --generate-delta
 
-      - name: Live Deployment Preview (Confirming Changes)
+
+          echo ""
+          echo "================================="
+          echo "Dynamic Metadata Scan"
+          echo "================================="
+
+          git diff --name-only "$BASE" "$HEAD" > changedFiles.txt
+
+          cat changedFiles.txt
+
+
+          while read FILE
+          do
+
+              FILE=$(echo "$FILE"|xargs)
+
+              if [[ -z "$FILE" ]]
+              then
+                  continue
+              fi
+
+              if [[ ! "$FILE" == *.cls ]]
+              then
+                  continue
+              fi
+
+              if [[ ! -f "$FILE" ]]
+              then
+                  continue
+              fi
+
+              echo ""
+              echo "Scanning Apex : $FILE"
+
+              grep -o "[A-Za-z0-9_]*__c" "$FILE" | sort -u > objects.txt
+
+              while read OBJECT
+              do
+
+                  OBJECT=$(echo "$OBJECT"|xargs)
+
+                  if [[ -z "$OBJECT" ]]
+                  then
+                      continue
+                  fi
+
+                  echo "Detected : $OBJECT"
+
+                  if [ -d "force-app/main/default/objects/$OBJECT" ]
+                  then
+
+                      echo "Adding metadata : $OBJECT"
+
+                      mkdir -p delta-package/force-app/main/default/objects
+
+                      cp -r \
+                      "force-app/main/default/objects/$OBJECT" \
+                      "delta-package/force-app/main/default/objects/"
+
+                  else
+
+                      echo "Warning : Metadata not found : $OBJECT"
+
+                  fi
+
+              done < objects.txt
+
+          done < changedFiles.txt
+
+      - name: Deployment Preview
         run: |
-          echo "========================================================="
-          echo "🔍 LIVE MANIFEST VERIFICATION BEFORE DEPLOYMENT"
-          echo "========================================================="
-          
-          if [ -f "delta-package/package/package.xml" ]; then
-              echo " New / Modified Components detected in Delta Package:"
+
+          echo "=========================="
+
+          if [ -f delta-package/package/package.xml ]
+          then
+
               cat delta-package/package/package.xml
+
           else
-              echo "Notice: No package.xml generated for deployment modifications."
+
+              echo "No package.xml found"
+
           fi
 
-          if [ -f "delta-package/destructiveChanges/destructiveChanges.xml" ]; then
-              echo "🗑️ Destructive Changes (Deletions) detected:"
-              cat delta-package/destructiveChanges/destructiveChanges.xml
-          else
-              echo "Notice: No destructive tracking parameters recorded."
-          fi
-          echo "========================================================="
+          echo "=========================="
 
-      - name: Deploy Manifest Packages via Salesforce SOAP API
+      - name: Deploy Components
+
         run: |
-          # Base Deploy Command structure utilizing safe manifest flags
-          DEPLOY_CMD="sf project deploy start --target-org TARGETORG --test-level ${{ github.event.inputs.testLevel }} --wait 30 --ignore-conflicts"
+
+          DEPLOY_CMD="sf project deploy start \
+          --target-org TARGETORG \
+          --test-level ${{ github.event.inputs.testLevel }} \
+          --wait 30 \
+          --ignore-conflicts"
+
           HAS_CHANGES=false
 
-          # 1. Evaluate package.xml path structure
-          PKG_XML=""
-          if [ -f "delta-package/package/package.xml" ]; then
-              PKG_XML="delta-package/package/package.xml"
-          elif [ -f "delta-package/package.xml" ]; then
-              PKG_XML="delta-package/package.xml"
+
+          if [ -f delta-package/package/package.xml ]
+          then
+
+              if grep -q "<members>" delta-package/package/package.xml
+              then
+
+                  DEPLOY_CMD="$DEPLOY_CMD --manifest delta-package/package/package.xml"
+
+                  HAS_CHANGES=true
+
+              fi
+
           fi
 
-          if [ -n "$PKG_XML" ] && grep -q "<members>" "$PKG_XML"; then
-              echo "Appending standard components deployment manifest rules."
-              DEPLOY_CMD="$DEPLOY_CMD --manifest $PKG_XML"
-              HAS_CHANGES=true
-          fi
 
-          # 2. Evaluate destructiveChanges.xml path structure
-          DEST_XML=""
-          if [ -f "delta-package/destructiveChanges/destructiveChanges.xml" ]; then
-              DEST_XML="delta-package/destructiveChanges/destructiveChanges.xml"
-          elif [ -f "delta-package/destructiveChanges.xml" ]; then
-              DEST_XML="delta-package/destructiveChanges.xml"
-          fi
+          if [ "$HAS_CHANGES" = false ]
+          then
 
-          if [ -n "$DEST_XML" ] && grep -q "<members>" "$DEST_XML"; then
-              echo "✅ Appending post-destructive execution rules."
-              DEPLOY_CMD="$DEPLOY_CMD --post-destructive-changes $DEST_XML"
-              HAS_CHANGES=true
-          fi
+              echo "No deployable changes found"
 
-          # 3. Handle Empty Changes Exit Safely
-          if [ "$HAS_CHANGES" = false ]; then
-              echo " Safe Exit: No deployable components or structural modifications found. Exiting successfully."
               exit 0
+
           fi
 
-          echo "Executing Deployment Pipeline Architecture:"
+
+          echo ""
+          echo "Running Deploy"
+
           echo "$DEPLOY_CMD"
-          
+
           eval $DEPLOY_CMD
