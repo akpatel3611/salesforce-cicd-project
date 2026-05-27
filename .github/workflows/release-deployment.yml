@@ -44,14 +44,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Validate PR Input Parameters
+      - name: Validate Inputs
         if: github.event.inputs.deploymentType == 'SpecificPR'
         run: |
-
           if [ -z "${{ github.event.inputs.prNumber }}" ]
           then
-              echo "ERROR : PR Number required"
-              exit 1
+            echo "ERROR : PR Number required"
+            exit 1
           fi
 
   deploy:
@@ -69,9 +68,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install Salesforce CLI
+      - name: Install CLI
         run: |
-
           npm install @salesforce/cli --global
 
           sudo apt-get update
@@ -82,7 +80,6 @@ jobs:
 
       - name: Install Git Delta Plugin
         run: |
-
           yes | sf plugins install sfdx-git-delta
 
       - name: Authenticate Org
@@ -108,8 +105,6 @@ jobs:
 
           rm auth.txt
 
-          sf org display --target-org TARGETORG
-
       - name: Generate Delta Package
 
         env:
@@ -122,30 +117,27 @@ jobs:
           if [ "${{ github.event.inputs.deploymentType }}" = "SpecificPR" ]
           then
 
-              PR="${{ github.event.inputs.prNumber }}"
+            PR="${{ github.event.inputs.prNumber }}"
 
-              echo "Processing PR : $PR"
-
-              BASE=$(gh pr view $PR --json baseRefOid --jq '.baseRefOid')
-              HEAD=$(gh pr view $PR --json headRefOid --jq '.headRefOid')
+            BASE=$(gh pr view "$PR" --json baseRefOid --jq '.baseRefOid')
+            HEAD=$(gh pr view "$PR" --json headRefOid --jq '.headRefOid')
 
           else
 
-              echo "Finding latest merged PR"
+            PR=$(gh pr list \
+            --state merged \
+            --limit 1 \
+            --json number \
+            --jq '.[0].number')
 
-              PR=$(gh pr list \
-              --state merged \
-              --limit 1 \
-              --json number \
-              --jq '.[0].number')
-
-              BASE=$(gh pr view $PR --json baseRefOid --jq '.baseRefOid')
-              HEAD=$(gh pr view $PR --json headRefOid --jq '.headRefOid')
+            BASE=$(gh pr view "$PR" --json baseRefOid --jq '.baseRefOid')
+            HEAD=$(gh pr view "$PR" --json headRefOid --jq '.headRefOid')
 
           fi
 
-          echo "Base : $BASE"
-          echo "Head : $HEAD"
+
+          echo "BASE : $BASE"
+          echo "HEAD : $HEAD"
 
           sf sgd source delta \
           --from "$BASE" \
@@ -156,132 +148,76 @@ jobs:
 
 
           echo ""
-          echo "================================="
+          echo "================================"
           echo "Dynamic Metadata Scan"
-          echo "================================="
+          echo "================================"
 
           git diff --name-only "$BASE" "$HEAD" > changedFiles.txt
-
-          cat changedFiles.txt
 
 
           while read FILE
           do
 
-              FILE=$(echo "$FILE"|xargs)
+            if [[ ! "$FILE" == *.cls ]]
+            then
+              continue
+            fi
 
-              if [[ -z "$FILE" ]]
+            if [[ ! -f "$FILE" ]]
+            then
+              continue
+            fi
+
+            echo ""
+            echo "Scanning : $FILE"
+
+            grep -o "FROM [A-Za-z0-9_]*__c" "$FILE" \
+            | awk '{print $2}' \
+            | sort -u > objects.txt
+
+
+            while read OBJECT
+            do
+
+              if [[ -z "$OBJECT" ]]
               then
-                  continue
+                continue
               fi
 
-              if [[ ! "$FILE" == *.cls ]]
+              echo "Detected : $OBJECT"
+
+              if [ -d "force-app/main/default/objects/$OBJECT" ]
               then
-                  continue
+
+                echo "Adding : $OBJECT"
+
+                mkdir -p delta-package/force-app/main/default/objects
+
+                cp -r \
+                "force-app/main/default/objects/$OBJECT" \
+                "delta-package/force-app/main/default/objects/"
+
               fi
 
-              if [[ ! -f "$FILE" ]]
-              then
-                  continue
-              fi
-
-              echo ""
-              echo "Scanning Apex : $FILE"
-
-              grep -o "[A-Za-z0-9_]*__c" "$FILE" | sort -u > objects.txt
-
-              while read OBJECT
-              do
-
-                  OBJECT=$(echo "$OBJECT"|xargs)
-
-                  if [[ -z "$OBJECT" ]]
-                  then
-                      continue
-                  fi
-
-                  echo "Detected : $OBJECT"
-
-                  if [ -d "force-app/main/default/objects/$OBJECT" ]
-                  then
-
-                      echo "Adding metadata : $OBJECT"
-
-                      mkdir -p delta-package/force-app/main/default/objects
-
-                      cp -r \
-                      "force-app/main/default/objects/$OBJECT" \
-                      "delta-package/force-app/main/default/objects/"
-
-                  else
-
-                      echo "Warning : Metadata not found : $OBJECT"
-
-                  fi
-
-              done < objects.txt
+            done < objects.txt
 
           done < changedFiles.txt
 
       - name: Deployment Preview
         run: |
 
-          echo "=========================="
+          echo "========== PACKAGE =========="
 
-          if [ -f delta-package/package/package.xml ]
-          then
+          cat delta-package/package/package.xml || true
 
-              cat delta-package/package/package.xml
-
-          else
-
-              echo "No package.xml found"
-
-          fi
-
-          echo "=========================="
+          echo "============================="
 
       - name: Deploy Components
-
         run: |
 
-          DEPLOY_CMD="sf project deploy start \
+          sf project deploy start \
           --target-org TARGETORG \
+          --manifest delta-package/package/package.xml \
           --test-level ${{ github.event.inputs.testLevel }} \
           --wait 30 \
-          --ignore-conflicts"
-
-          HAS_CHANGES=false
-
-
-          if [ -f delta-package/package/package.xml ]
-          then
-
-              if grep -q "<members>" delta-package/package/package.xml
-              then
-
-                  DEPLOY_CMD="$DEPLOY_CMD --manifest delta-package/package/package.xml"
-
-                  HAS_CHANGES=true
-
-              fi
-
-          fi
-
-
-          if [ "$HAS_CHANGES" = false ]
-          then
-
-              echo "No deployable changes found"
-
-              exit 0
-
-          fi
-
-
-          echo ""
-          echo "Running Deploy"
-
-          echo "$DEPLOY_CMD"
-
-          eval $DEPLOY_CMD
+          --ignore-conflicts
