@@ -149,59 +149,85 @@ jobs:
 
           echo ""
           echo "================================"
-          echo "Dynamic Metadata Scan"
+          echo "Apex Test Validation Report"
           echo "================================"
 
-          git diff --name-only "$BASE" "$HEAD" > changedFiles.txt
-
-
-          while read FILE
-          do
-
-            if [[ ! "$FILE" == *.cls ]]
-            then
-              continue
-            fi
-
-            if [[ ! -f "$FILE" ]]
-            then
-              continue
-            fi
-
-            echo ""
-            echo "Scanning : $FILE"
-
-            grep -o "FROM [A-Za-z0-9_]*__c" "$FILE" \
-            | awk '{print $2}' \
-            | sort -u > objects.txt
-
-
-            while read OBJECT
+            git diff --name-only "$BASE" "$HEAD" > changedFiles.txt
+                    
+            while read FILE
             do
-
-              if [[ -z "$OBJECT" ]]
+                    
+              if [[ ! "$FILE" == *.cls ]]
               then
                 continue
               fi
-
-              echo "Detected : $OBJECT"
-
-              if [ -d "force-app/main/default/objects/$OBJECT" ]
+                    
+              if [[ ! -f "$FILE" ]]
               then
-
-                echo "Adding : $OBJECT"
-
-                mkdir -p delta-package/force-app/main/default/objects
-
-                cp -r \
-                "force-app/main/default/objects/$OBJECT" \
-                "delta-package/force-app/main/default/objects/"
-
+                continue
               fi
-
-            done < objects.txt
-
-          done < changedFiles.txt
+                    
+              if grep -qi "@IsTest" "$FILE"
+              then
+                continue
+              fi
+                    
+              APEX_NAME=$(basename "$FILE" .cls)
+                    
+              echo ""
+              echo "Changed Apex : $APEX_NAME"
+                    
+              MATCH_FOUND=false
+                    
+              EXACT_TEST="force-app/main/default/classes/${APEX_NAME}Test.cls"
+                    
+              if [ -f "$EXACT_TEST" ]
+              then
+                    
+                echo "Matched Test : ${APEX_NAME}Test"
+                echo "Status : FOUND (Exact Match)"
+                    
+                MATCH_FOUND=true
+                    
+              fi
+                    
+              if [ "$MATCH_FOUND" = false ]
+              then
+                    
+                while read TESTFILE
+                do
+                    
+                  if grep -qi "@IsTest" "$TESTFILE"
+                  then
+                    
+                    if grep -q "$APEX_NAME\." "$TESTFILE"
+                    then
+                    
+                      TESTNAME=$(basename "$TESTFILE" .cls)
+                    
+                      echo "Matched Test : $TESTNAME"
+                      echo "Status : FOUND (Content Match)"
+                    
+                      MATCH_FOUND=true
+                      break
+                    
+                    fi
+                    
+                  fi
+                    
+                done < <(find force-app/main/default/classes -name "*.cls")
+                    
+              fi
+                    
+              if [ "$MATCH_FOUND" = false ]
+              then
+                    
+                echo "WARNING : No related test class found"
+                echo "Deployment will continue"
+                    
+              fi
+                    
+                    done < changedFiles.txt
 
       - name: Deployment Preview
         run: |
