@@ -9,7 +9,7 @@ public with sharing class AsyncEventManager {
         String resourceType,
         String operationName
     ) {
-
+        System.debug('Publishing STARTED event for recordId: ' + recordId + ', jobId: ' + jobId);
         AsyncEventPublisher.publishEvent(
             recordId,
             'STARTED',
