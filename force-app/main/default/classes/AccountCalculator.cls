@@ -6,6 +6,7 @@ public class AccountCalculator {
             acc.Number_Of_Contacts__c = acc.Contacts.size();
         }
         if(!accList.isEmpty()){
+            System.debug('before account update : '+ accList);
             update accList;
         }
     }
